@@ -5,15 +5,25 @@ const vscode = require('vscode');
 const { Ollama } = require("@langchain/community/llms/ollama");
 const pdfParse = require('pdf-parse');
 const { exec } = require('child_process');
+const {OpenAI} = require("openai");
+
 
 let selectedText = '';
 let uploadedFileText = '';
 let activeEditor = null;
+let isGPT = false;
+
 
 let ollama = new Ollama({
 	baseUrl: "http://localhost:11434", // Default value
 	model: "phi3", // Default value
   });
+
+
+const openai = new OpenAI({
+	apiKey: "sk-proj-M6ZLbZbpndRH2OSr87PKT3BlbkFJMAbUFWQUx1Wwe4vdZ1vy"
+});
+
 
 
 // This method is called when your extension is activated
@@ -66,7 +76,7 @@ function activate(context) {
       panel.webview.html = getWebviewContent("Hi there! Ask me anything");
 
 	  panel.webview.onDidReceiveMessage(
-		async message => {``
+		async message => {
 			if (message.command === 'sendInput') {
 				
 				let userInput = message.text;
@@ -81,39 +91,83 @@ function activate(context) {
 
 				console.log(userInput);
 
-				const stream = await ollama.stream(userInput);
-				userInput = '';
-				selectedText = '';
-				uploadedFileText = '';
+				if(isGPT) {
+					try {
+                        const response = await openai.chat.completions.create({
+                            model: "gpt-3.5-turbo",
+                            messages: [{"role": "user", content: userInput }],
+                            stream: true,
+                        });
 
-				const messageId = Date.now(); // Unique identifier for the message
+                        let codeMode = false;
+                        let codeId = null;
+                        let textId = "textId-" + Date.now();
+                        const messageId = Date.now(); // Unique identifier for the message
 
-				panel.webview.postMessage({ command: 'startBotMessage', id: messageId });
+                        panel.webview.postMessage({ command: 'startBotMessage', id: messageId });
+                        panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
 
-				let codeMode = false;
-				let codeId = null;
-				let textId = "textId-" + Date.now();
-				panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
-
-				for await (const chunk of stream) {
-					if (chunk.includes("```")) {
-						codeMode = !codeMode;
-						if (codeMode) {
-							codeId = "codeId-" + Date.now();
-							panel.webview.postMessage({ command: 'startBotCode', id: messageId, codeId: codeId });
-						} else {
-							textId = "textId-" + Date.now();
-							panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
+						for await (const chunk of response) {
+							chunk = chunk.choices[0].delta
+							if (chunk.includes("```")) {
+								codeMode = !codeMode;
+								if (codeMode) {
+									codeId = "codeId-" + Date.now();
+									panel.webview.postMessage({ command: 'startBotCode', id: messageId, codeId: codeId });
+								} else {
+									textId = "textId-" + Date.now();
+									panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
+								}
+								continue;
+							}
+		
+							if (codeMode) {
+								panel.webview.postMessage({ command: 'updateBotCode', id: messageId, codeId: codeId, code: chunk });
+							} else {
+								panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: chunk });
+							}
 						}
-						continue;
-					}
 
-					if (codeMode) {
-						panel.webview.postMessage({ command: 'updateBotCode', id: messageId, codeId: codeId, code: chunk });
-					} else {
-						panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: chunk });
+                    } catch (error) {
+                        console.error(`Error calling OpenAI API: ${error}`);
+                    }
+				} else {
+					const stream = await ollama.stream(userInput);
+					userInput = '';
+					selectedText = '';
+					uploadedFileText = '';
+	
+					const messageId = Date.now(); // Unique identifier for the message
+	
+					panel.webview.postMessage({ command: 'startBotMessage', id: messageId });
+	
+					let codeMode = false;
+					let codeId = null;
+					let textId = "textId-" + Date.now();
+					panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
+	
+					for await (const chunk of stream) {
+						if (chunk.includes("```")) {
+							codeMode = !codeMode;
+							if (codeMode) {
+								codeId = "codeId-" + Date.now();
+								panel.webview.postMessage({ command: 'startBotCode', id: messageId, codeId: codeId });
+							} else {
+								textId = "textId-" + Date.now();
+								panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
+							}
+							continue;
+						}
+	
+						if (codeMode) {
+							panel.webview.postMessage({ command: 'updateBotCode', id: messageId, codeId: codeId, code: chunk });
+						} else {
+							panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: chunk });
+						}
 					}
 				}
+
+
 				
 				// const result = chunks.join("");
 				// vscode.window.showInformationMessage(result);
@@ -130,11 +184,17 @@ function activate(context) {
 
 			} else if (message.command === 'changeModel') {
 				const selectedModel = message.model.toString();
+
+				if(selectedModel == "GPT") {
+					isGPT = true;
+				} else {
+					ollama = new Ollama({
+						baseUrl: "http://localhost:11434", // Default value
+						model: selectedModel,
+					});
+					isGPT = false;
+				}
 				console.log(`Switching to model: ${selectedModel}`);
-				ollama = new Ollama({
-					baseUrl: "http://localhost:11434", // Default value
-					model: selectedModel,
-				});
 				vscode.window.showInformationMessage(`Model changed to: ${selectedModel}`);
 			}
 		},

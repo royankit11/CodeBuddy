@@ -39,6 +39,7 @@
   },
   "dependencies": {
     "@langchain/community": "^0.0.54",
+    "openai": "^3.47.1",
     "pdf-parse": "^1.1.1"
   }
 }
