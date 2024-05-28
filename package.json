@@ -38,6 +38,7 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
-    "@langchain/community": "^0.0.54"
+    "@langchain/community": "^0.0.54",
+    "pdf-parse": "^1.1.1"
   }
 }

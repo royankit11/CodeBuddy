@@ -3,9 +3,17 @@
 // Import the module and reference it with the alias vscode in your code below
 const vscode = require('vscode');
 const { Ollama } = require("@langchain/community/llms/ollama");
+const pdfParse = require('pdf-parse');
+const { exec } = require('child_process');
 
 let selectedText = '';
+let uploadedFileText = '';
 let activeEditor = null;
+
+let ollama = new Ollama({
+	baseUrl: "http://localhost:11434", // Default value
+	model: "phi3", // Default value
+  });
 
 
 // This method is called when your extension is activated
@@ -20,10 +28,15 @@ function activate(context) {
 	// This line of code will only be executed once when your extension is activated
 	console.log('Congratulations, your extension "code-assistant" is now active!');
 
-	const ollama = new Ollama({
-		baseUrl: "http://localhost:11434", // Default value
-		model: "phi3", // Default value
-	  });
+	exec('ollama serve', (err, stdout, stderr) => {
+        if (err) {
+            console.error(`Error starting ollama serve: ${err}`);
+            return;
+        }
+        console.log(`ollama serve output: ${stdout}`);
+        console.error(`ollama serve error output: ${stderr}`);
+    });
+
 
 	vscode.window.onDidChangeTextEditorSelection(event => {
 		const editor = event.textEditor;
@@ -52,7 +65,7 @@ function activate(context) {
       panel.webview.html = getWebviewContent("Hi there! Ask me anything");
 
 	  panel.webview.onDidReceiveMessage(
-		async message => {
+		async message => {``
 			if (message.command === 'sendInput') {
 				
 				let userInput = message.text;
@@ -61,9 +74,16 @@ function activate(context) {
 					userInput = userInput + ". Here is the highlighted code: " + selectedText;
 				}
 
+				if(uploadedFileText) {
+					userInput = userInput + ". Here is the relevant file: " + uploadedFileText;
+				}
+
 				console.log(userInput);
 
 				const stream = await ollama.stream(userInput);
+				userInput = '';
+				selectedText = '';
+				uploadedFileText = '';
 
 				const messageId = Date.now(); // Unique identifier for the message
 
@@ -97,6 +117,24 @@ function activate(context) {
 				// const result = chunks.join("");
 				// vscode.window.showInformationMessage(result);
 				// updateWebview(result);
+			} else if (message.command === 'uploadFile') {
+				const file = message.file;
+				const fileContent = Buffer.from(file, 'base64');
+				const fileName = message.fileName;
+				const data = await pdfParse(fileContent);
+
+				let uploadedFileName = fileName;
+				uploadedFileText += data.text;
+				console.log(uploadedFileText);
+
+			} else if (message.command === 'changeModel') {
+				const selectedModel = message.model.toString();
+				console.log(`Switching to model: ${selectedModel}`);
+				ollama = new Ollama({
+					baseUrl: "http://localhost:11434", // Default value
+					model: selectedModel,
+				});
+				vscode.window.showInformationMessage(`Model changed to: ${selectedModel}`);
 			}
 		},
 		undefined,
@@ -105,6 +143,17 @@ function activate(context) {
     });
 
 	context.subscriptions.push(other);
+}
+
+function updateFileName(fileName) {
+    const fileNameElement = document.getElementById('fileName');
+    if (fileName) {
+        fileNameElement.textContent = fileName;
+        fileNameElement.classList.add('success');
+    } else {
+        fileNameElement.textContent = '';
+        fileNameElement.classList.remove('success');
+    }
 }
 
 function getWebviewContent(information) {
@@ -123,6 +172,21 @@ function getWebviewContent(information) {
 				flex-direction: column;
 				height: 100vh;
 			}
+			#header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 10px;
+                border-bottom: 1px solid #ccc;
+                box-sizing: border-box;
+            }
+            #modelSelect {
+                padding: 10px;
+                font-size: 12px;
+                border: 1px solid #ccc;
+                border-radius: 5px;
+                outline: none;
+            }
 			#chatContainer {
 				flex: 1;
 				display: flex;
@@ -161,6 +225,20 @@ function getWebviewContent(information) {
 				border-radius: 5px;
 				outline: none;
 			}
+			#uploadButton {
+				padding: 10px 20px;
+				font-size: 16px;
+				margin-left: 10px;
+				border: none;
+				background-color: #4CAF50;
+				color: white;
+				border-radius: 5px;
+				cursor: pointer;
+			}
+			#uploadButton:hover {
+				background-color: #45a049;
+			}
+
 			#sendButton {
 				padding: 10px 20px;
 				font-size: 16px;
@@ -173,6 +251,18 @@ function getWebviewContent(information) {
 			}
 			#sendButton:hover {
 				background-color: #45a049;
+			}
+			/* Your existing CSS styles */
+			#fileName.success::after {
+				content: ' ✓';
+				color: green;
+				margin-left: 5px;
+			}
+			#fileName {
+				margin-bottom: 10px;
+				margin-left: 10px;
+				margin-top: 10px;
+				font-size: 15px /* Add margin-bottom to separate the file name from the input box */
 			}
 			pre {
 				background: #000;
@@ -205,11 +295,21 @@ function getWebviewContent(information) {
 		</style>
 	</head>
 	<body>
+		<div id="header">
+            <div>Select Model:</div>
+            <select id="modelSelect" onchange="changeModel()">
+                <option value="phi3">phi3</option>
+                <option value="llama2">llama2</option>
+                <option value="codellama">codellama</option>
+            </select>
+        </div>
 		<div id="chatContainer">
 			<div class="message botMessage">${information}</div>
 		</div>
+		<div id="fileName"></div>
 		<div id="inputContainer">
 			<input type="text" id="inputBox" placeholder="Type your message here...">
+			<button id="uploadButton" onclick="uploadFile()">Upload</button>
 			<button id="sendButton" onclick="sendMessage()">Send</button>
 		</div>
 		<script>
@@ -225,6 +325,41 @@ function getWebviewContent(information) {
 						text: message
 					});
 					inputBox.value = '';
+					updateFileName('');
+				}
+			}
+
+			function uploadFile() {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = '.pdf';
+                input.onchange = async () => {
+                    const file = input.files[0];
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        const fileContent = reader.result.split(',')[1];
+						const fileName = file.name;
+                        vscode.postMessage({
+                            command: 'uploadFile',
+                            file: fileContent,
+							fileName: fileName
+                        });
+						updateFileName(fileName);
+                    };
+                    reader.readAsDataURL(file);
+                };
+                input.click();
+			}
+
+			function updateFileName(fileName) {
+				const fileNameElement = document.getElementById('fileName');
+
+				if(fileName) {
+					fileNameElement.textContent = fileName;
+					fileNameElement.classList.add('success');
+				} else {
+					fileNameElement.textContent = '';
+					fileNameElement.classList.remove('success');
 				}
 			}
 
@@ -289,6 +424,14 @@ function getWebviewContent(information) {
 					chatContainer.scrollTop = chatContainer.scrollHeight;
 				}
 			}
+			function changeModel() {
+                const modelSelect = document.getElementById('modelSelect');
+                const selectedModel = modelSelect.value;
+                vscode.postMessage({
+                    command: 'changeModel',
+                    model: selectedModel
+                });
+            }
 
 			// Listen for messages from the extension
 			window.addEventListener('message', event => {
@@ -309,7 +452,6 @@ function getWebviewContent(information) {
 					case 'updateBotCode':
 						updateBotCode(message.id, message.codeId, message.code);
 						break;
-
 				}
 			});
 		</script>
