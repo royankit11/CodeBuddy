@@ -47,6 +47,7 @@ function activate(context) {
 		}
 	});
 
+
     let other = vscode.commands.registerCommand('code-assistant.openChat', function () {
         // Create and show a new panel
         const panel = vscode.window.createWebviewPanel(
@@ -301,6 +302,7 @@ function getWebviewContent(information) {
                 <option value="phi3">phi3</option>
                 <option value="llama2">llama2</option>
                 <option value="codellama">codellama</option>
+				<option value="GPT">GPT</option>
             </select>
         </div>
 		<div id="chatContainer">
