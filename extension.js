@@ -42,7 +42,9 @@ function activate(context) {
         }
     });
 
-    let other = vscode.commands.registerCommand('code-assistant.openChat', function () {
+
+
+    let openChatCommand = vscode.commands.registerCommand('code-assistant.openChat', function () {
         const panel = vscode.window.createWebviewPanel(
             'chatPanel',
             'Chat',
@@ -73,10 +75,66 @@ function activate(context) {
             }
         });
 
-        context.subscriptions.push(other);
+        context.subscriptions.push(openChatCommand);
     });
 
-    context.subscriptions.push(other);
+    context.subscriptions.push(openChatCommand);
+	context.subscriptions.push(
+        vscode.languages.registerInlineCompletionItemProvider({ pattern: '**' }, new MyInlineCompletionItemProvider())
+    );
+
+}
+
+
+class MyInlineCompletionItemProvider {
+	constructor() {
+        // Initialize a timer variable
+        this.timer = null;
+		this.latestPrompt = ''
+		this.latestCompletion = '';
+    }
+
+    async provideInlineCompletionItems(document, position, context, token) {
+		clearTimeout(this.timer);
+
+		return new Promise((resolve) => {
+            // Set a new timer for 2 seconds
+            this.timer = setTimeout(async () => {
+                try {
+                    const text = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
+					const language = document.languageId;
+					console.log(language);
+					if(text === this.latestPrompt) {
+						let completionItem = new vscode.InlineCompletionItem(this.latestCompletion);
+						completionItem.range = new vscode.Range(position, position);
+						resolve(new vscode.InlineCompletionList([completionItem]));
+					} else {
+						this.latestPrompt = text;
+						let completionText = '';
+						const stream = await ollama.stream("Complete just this line of code. Language is " + language + ". Just code, no other text. " + 
+						"Do not add triple quotes or the coding language. Don't write what I've already written." +
+						"Here is the start of the line: " + text);
+						
+						for await (const chunk of stream) {
+							completionText += chunk;
+						}
+						console.log(completionText);
+						this.latestCompletion = completionText;
+
+						let completionItem = new vscode.InlineCompletionItem(completionText);
+						completionItem.range = new vscode.Range(position, position);
+
+						// Resolve the promise with the completion item
+						resolve(new vscode.InlineCompletionList([completionItem]));
+					}
+                } catch (error) {
+                    console.error("Error fetching completion:", error);
+                    // Resolve with an empty completion list in case of an error
+                    resolve(new vscode.InlineCompletionList([]));
+                }
+            }, 2000); // 2000 milliseconds = 2 seconds
+        });
+    }
 }
 
 async function handleUserInput(panel, userInput) {
