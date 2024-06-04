@@ -1,9 +1,27 @@
+const { initializeApp } = require('firebase/app');
+const { getFirestore, doc, setDoc, getDoc} = require('firebase/firestore');
+
+const firebaseConfig = {
+	apiKey: "AIzaSyDJKHWvywSOFaIreT0LL6e6EXCULwF5bMg",
+	authDomain: "spotifywrapped-45dcc.firebaseapp.com",
+	projectId: "spotifywrapped-45dcc",
+	storageBucket: "spotifywrapped-45dcc.appspot.com",
+	messagingSenderId: "777226242233",
+	appId: "1:777226242233:web:fe41a8c6bad67cb880b368",
+	measurementId: "G-3V6CDJVD22"
+  };
+
+let app = initializeApp(firebaseConfig);
+let firestoreDB = getFirestore();
+
 const vscode = require('vscode');
 const { Ollama } = require("@langchain/community/llms/ollama");
 const pdfParse = require('pdf-parse');
 const { exec } = require('child_process');
 const { OpenAI } = require("openai");
 const AbortController = require('abort-controller');
+const { Pinecone } = require('@pinecone-database/pinecone');
+const { OllamaEmbeddings } = require('@langchain/community/embeddings/ollama');
 
 let selectedText = '';
 let uploadedFileText = '';
@@ -16,10 +34,23 @@ let ollama = new Ollama({
     model: "phi3", // Default value
 });
 
+const embeddings = new OllamaEmbeddings({
+	model: "phi3", // default value
+	baseUrl: "http://localhost:11434", // default value
+});
+  
 const openai = new OpenAI({
     apiKey: "sk-proj-M6ZLbZbpndRH2OSr87PKT3BlbkFJMAbUFWQUx1Wwe4vdZ1vy"
 });
 let abortController = new AbortController();
+
+
+const pc = new Pinecone({
+	apiKey: '9894c035-5130-48f8-9579-c9101ba21180', // Replace with your Pinecone API key
+  });
+const index = pc.index("llm-extension")
+
+
 
 function activate(context) {
     console.log('Congratulations, your extension "code-assistant" is now active!');
@@ -32,6 +63,7 @@ function activate(context) {
         console.log(`ollama serve output: ${stdout}`);
         console.error(`ollama serve error output: ${stderr}`);
     });
+
 
     vscode.window.onDidChangeTextEditorSelection(event => {
         const editor = event.textEditor;
@@ -58,13 +90,33 @@ function activate(context) {
             if (message.command === 'sendInput') {
 				let userInput = message.text;
 
+				const documentEmbeddings = await embeddings.embedQuery(userInput);
+				const queryResponse = await index.namespace('docs').query({
+					vector: documentEmbeddings,
+					topK: 1
+				});
+								
+				console.log(queryResponse);
+				let matches = queryResponse.matches;
+
+				let id = matches[0].id;
+
+				const docRef = doc(firestoreDB, "DOCS", id);
+				const docSnap = await getDoc(docRef);
+
+				// Check if the document exists
+				if (docSnap.exists()) {
+					// Document data
+					console.log("Document data:", docSnap.data().text);
+					userInput = userInput + ". Here is some context: " + docSnap.data().text;
+				} 
 				if (selectedText) {
 					userInput = userInput + ". Here is the highlighted code: " + selectedText;
 				}
 
-				if(uploadedFileText) {
-					userInput = userInput + ". Here is the relevant file: " + uploadedFileText;
-				}
+				// if(uploadedFileText) {
+				// 	userInput = userInput + ". Here is the relevant file: " + uploadedFileText;
+				// }
                 await handleUserInput(panel, userInput);
             } else if (message.command === 'stopStream') {
                 await stopStream(panel);
@@ -194,8 +246,29 @@ async function stopStream(panel) {
 async function handleFileUpload(file, fileName) {
     const fileContent = Buffer.from(file, 'base64');
     const data = await pdfParse(fileContent);
-    uploadedFileText += data.text;
-    console.log(uploadedFileText);
+    uploadedFileText = data.text;
+
+	const documentEmbeddings = await embeddings.embedQuery(uploadedFileText)
+
+    await index.namespace('docs').upsert([
+		{
+		  id: fileName,
+		  values: documentEmbeddings
+		}
+	])
+
+	const fileData = {
+		text: uploadedFileText,
+	};
+
+	try {
+		const document = doc(firestoreDB, "DOCS", fileName);
+        let dataUpdated = await setDoc(document, fileData);
+        console.log("Document written successfully to Firestore.");
+    } catch (error) {
+        console.error("Error writing document to Firestore:", error);
+    }
+	
 }
 
 async function changeModel(selectedModel) {

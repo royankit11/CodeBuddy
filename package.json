@@ -39,7 +39,10 @@
   },
   "dependencies": {
     "@langchain/community": "^0.0.54",
-    "openai": "^3.47.1",
+    "@pinecone-database/pinecone": "^2.2.2",
+    "firebase": "^10.12.2",
+    "firebase-admin": "^12.1.1",
+    "openai": "^4.47.3",
     "pdf-parse": "^1.1.1"
   }
 }
