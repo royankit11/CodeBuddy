@@ -1,5 +1,5 @@
 const { initializeApp } = require('firebase/app');
-const { getFirestore, doc, setDoc, getDoc} = require('firebase/firestore');
+const { getFirestore, doc, setDoc, getDoc, getDocs, collection, deleteDoc} = require('firebase/firestore');
 
 const firebaseConfig = {
 	apiKey: "AIzaSyDJKHWvywSOFaIreT0LL6e6EXCULwF5bMg",
@@ -50,9 +50,10 @@ const pc = new Pinecone({
   });
 const index = pc.index("llm-extension")
 
+let uploadedFiles = [];
 
 
-function activate(context) {
+ function activate(context) {
     console.log('Congratulations, your extension "code-assistant" is now active!');
 
     exec('ollama serve', (err, stdout, stderr) => {
@@ -74,9 +75,16 @@ function activate(context) {
         }
     });
 
+	vscode.workspace.onDidSaveTextDocument(async (document) => {
+        const codebase = document.getText();
+        const fileName = document.fileName;
 
+        await storeCodebase(codebase, fileName);
 
-    let openChatCommand = vscode.commands.registerCommand('code-assistant.openChat', function () {
+        vscode.window.showInformationMessage('Codebase stored successfully!');
+    });
+
+    let openChatCommand = vscode.commands.registerCommand('code-assistant.openChat', async function () {
         const panel = vscode.window.createWebviewPanel(
             'chatPanel',
             'Chat',
@@ -86,26 +94,47 @@ function activate(context) {
 
         panel.webview.html = getWebviewContent("Hi there! Ask me anything");
 
+		//Loop through every doc in firebase DOCS collection and add to uploaded docs array
+		try {
+			const querySnapshot = await getDocs(collection(firestoreDB, "DOCS"));
+			querySnapshot.forEach((doc) => {
+				uploadedFiles.push(doc.id);
+			});
+		} catch (error) {
+			console.error("Error fetching documents from Firestore:", error);
+		}
+
+		panel.webview.postMessage({
+			command: 'updateFileList',
+			files: uploadedFiles
+		});
+
         panel.webview.onDidReceiveMessage(async message => {
             if (message.command === 'sendInput') {
 				let userInput = message.text;
 
-				const documentEmbeddings = await embeddings.embedQuery(userInput);
-				const queryResponse = await index.namespace('docs').query({
-					vector: documentEmbeddings,
+				const embeddedInput = await embeddings.embedQuery(userInput);
+				const docResponse = await index.namespace('docs').query({
+					vector: embeddedInput,
 					topK: 1
 				});
-				let matches = queryResponse.matches;
 
-				console.log(matches[0]);
+				const codeResponse = await index.namespace('code').query({
+					vector: embeddedInput,
+					topK: 1
+				});
 
-				if(matches[0]) {
-					let id = matches[0].id;
-					let score = matches[0].score;
-					console.log(id);
-					console.log(score);
+				let docMatches = docResponse.matches;
+				let codeMatches = codeResponse.matches;
 
-					const docRef = doc(firestoreDB, "DOCS", id);
+
+				if(docMatches[0]) {
+					let docID = docMatches[0].id;
+					let docScore = docMatches[0].score;
+					console.log(docID);
+					console.log(docScore);
+					
+					const docRef = doc(firestoreDB, "DOCS", docID);
 					const docSnap = await getDoc(docRef);
 
 					if (docSnap.exists()) {
@@ -115,6 +144,26 @@ function activate(context) {
 					} 
 				}
 
+				if(codeMatches[0]) {
+					let codeID = codeMatches[0].id;
+					let codeScore = codeMatches[0].score;
+					console.log(codeID);
+					console.log(codeScore);
+					
+					const codeRef = doc(firestoreDB, "CODE", codeID);
+					const codeSnap = await getDoc(codeRef);
+
+					if (codeSnap.exists()) {
+						//userInput = userInput + ". Here are some files that might provide context. It may or may not be pertinent to the query but keep it in mind: "
+						//+ docSnap.data().text;
+						userInput += ". Relevant Code: " + codeSnap.data().text;
+					} 
+				}
+
+				console.log(userInput);
+
+
+
 				if (selectedText) {
 					userInput = userInput + ". Here is the highlighted code: " + selectedText;
 				}
@@ -123,10 +172,12 @@ function activate(context) {
             } else if (message.command === 'stopStream') {
                 await stopStream(panel);
             } else if (message.command === 'uploadFile') {
-                await handleFileUpload(message.file, message.fileName);
+                await handleFileUpload(panel, message.file, message.fileName);
             } else if (message.command === 'changeModel') {
                 await changeModel(message.model);
-            }
+            } else if (message.command === 'removeFile') {
+				await removeFileFromDB(panel, message.index);				
+			}
         });
 
         context.subscriptions.push(openChatCommand);
@@ -155,6 +206,7 @@ class MyInlineCompletionItemProvider {
             // Set a new timer for 2 seconds
             this.timer = setTimeout(async () => {
                 try {
+					vscode.window.setStatusBarMessage('Autocompleting...');
                     const text = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
 					const language = document.languageId;
 					console.log(language);
@@ -172,13 +224,13 @@ class MyInlineCompletionItemProvider {
 						for await (const chunk of stream) {
 							completionText += chunk;
 						}
-						console.log(completionText);
 						this.latestCompletion = completionText;
 
 						let completionItem = new vscode.InlineCompletionItem(completionText);
 						completionItem.range = new vscode.Range(position, position);
 
 						// Resolve the promise with the completion item
+						vscode.window.setStatusBarMessage('');
 						resolve(new vscode.InlineCompletionList([completionItem]));
 					}
                 } catch (error) {
@@ -237,6 +289,39 @@ async function handleUserInput(panel, userInput) {
 	panel.webview.postMessage({ command: 'stopStream' });
 }
 
+async function storeCodebase(codebase, fileName) {
+    const lines = codebase.split('\n');
+    const chunkSize = 20; // Number of lines per chunk
+    let chunks = [];
+    for (let i = 0; i < lines.length; i += chunkSize) {
+        const chunk = lines.slice(i, i + chunkSize).join('\n');
+        chunks.push({ text: chunk, index: Math.floor(i / chunkSize) });
+    }
+
+	fileName = fileName.split('/').pop();
+	console.log(fileName);
+
+    for (const chunk of chunks) {
+        const chunkEmbeddings = await embeddings.embedQuery(chunk.text);
+        await index.namespace('code').upsert([
+            {
+                id: `${fileName}-chunk-${chunk.index}`,
+                values: chunkEmbeddings
+            }
+        ]);
+
+        const chunkData = {
+            text: chunk.text,
+            index: chunk.index,
+        };
+
+        const document = doc(firestoreDB, "CODE", `${fileName}-chunk-${chunk.index}`);
+        await setDoc(document, chunkData);
+    }
+
+    console.log("Codebase stored successfully.");
+}
+
 async function stopStream(panel) {
     if (currentStream && currentStream.return) {
         abortController.abort();
@@ -245,12 +330,29 @@ async function stopStream(panel) {
 	panel.webview.postMessage({ command: 'stopStream' });
 }
 
-async function handleFileUpload(file, fileName) {
+async function handleFileUpload(panel, file, fileName) {
     const fileContent = Buffer.from(file, 'base64');
+
+	panel.webview.postMessage({
+        command: 'updateProgress',
+        percent: '10%'
+    });
+
     const data = await pdfParse(fileContent);
     uploadedFileText = data.text;
 
+	panel.webview.postMessage({
+        command: 'updateProgress',
+        percent: '20%'
+    });
+
+
 	const documentEmbeddings = await embeddings.embedQuery(uploadedFileText)
+
+	panel.webview.postMessage({
+        command: 'updateProgress',
+        percent: '40%'
+    });
 
     await index.namespace('docs').upsert([
 		{
@@ -259,9 +361,15 @@ async function handleFileUpload(file, fileName) {
 		}
 	])
 
+
 	const fileData = {
 		text: uploadedFileText,
 	};
+
+	panel.webview.postMessage({
+        command: 'updateProgress',
+        percent: '70%'
+    });
 
 	try {
 		const document = doc(firestoreDB, "DOCS", fileName);
@@ -270,7 +378,38 @@ async function handleFileUpload(file, fileName) {
     } catch (error) {
         console.error("Error writing document to Firestore:", error);
     }
+
+	panel.webview.postMessage({
+        command: 'updateProgress',
+        percent: '100%'
+    });
+
+	uploadedFiles.push(fileName); // Add the filename to the array
+    panel.webview.postMessage({
+        command: 'updateFileList',
+        files: uploadedFiles
+    });
 	
+}
+
+async function removeFileFromDB(panel, ind) {
+	let file = uploadedFiles[ind];
+	uploadedFiles.splice(ind, 1); // Remove the file from the array
+	panel.webview.postMessage({
+		command: 'updateFileList',
+		files: uploadedFiles
+	});
+
+	await index.namespace('docs').deleteOne(file);
+
+	try {
+        const docRef = doc(firestoreDB, "DOCS", file);
+        await deleteDoc(docRef);
+        console.log("Document successfully deleted from Firestore.");
+    } catch (error) {
+        console.error("Error deleting document:", error);
+    }
+
 }
 
 async function changeModel(selectedModel) {
@@ -383,17 +522,40 @@ function getWebviewContent(information) {
 			#sendButton:hover {
 				background-color: #45a049;
 			}
-			/* Your existing CSS styles */
-			#fileName.success::after {
-				content: ' ✓';
-				color: green;
-				margin-left: 5px;
-			}
-			#fileName {
-				margin-bottom: 10px;
+			#fileNameList {
+                margin-bottom: 10px;
 				margin-left: 10px;
 				margin-top: 10px;
-				font-size: 15px /* Add margin-bottom to separate the file name from the input box */
+				font-size: 15px
+            }
+			.file-item {
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				padding: 5px;
+				border: 1px solid #ccc;
+				margin-bottom: 5px;
+			}
+			.remove-btn {
+				background: red;
+				color: white;
+				border: none;
+				cursor: pointer;
+			}
+			#progressBarContainer {
+				width: 100%;
+				height: 20px;
+				background-color: #f0f0f0;
+				border-radius: 5px;
+				margin-top: 10px;
+			}
+			
+			#progressBar {
+				width: 0%;
+				height: 100%;
+				background-color: #4CAF50;
+				border-radius: 5px;
+				transition: width 0.3s ease-in-out; /* Transition effect for width changes */
 			}
 			pre {
 				background: #000;
@@ -438,7 +600,10 @@ function getWebviewContent(information) {
 		<div id="chatContainer">
 			<div class="message botMessage">${information}</div>
 		</div>
-		<div id="fileName"></div>
+		<div id="fileNameList"></div>
+		<div id="progressBarContainer">
+            <div id="progressBar"></div>
+        </div>
 		<div id="inputContainer">
 			<input type="text" id="inputBox" placeholder="Type your message here...">
 			<button id="uploadButton" onclick="uploadFile()">Upload</button>
@@ -468,7 +633,6 @@ function getWebviewContent(information) {
 							text: message
 						});
 						inputBox.value = '';
-						updateFileName('');
 						sendButton.textContent = 'Stop';
 						sendButton.style.backgroundColor = '#fc0f03';
 						isStreaming = true;
@@ -492,7 +656,7 @@ function getWebviewContent(information) {
                             file: fileContent,
 							fileName: fileName
                         });
-						updateFileName(fileName);
+						//updateFileName(fileName);
                     };
                     reader.readAsDataURL(file);
                 };
@@ -509,6 +673,32 @@ function getWebviewContent(information) {
 					fileNameElement.textContent = '';
 					fileNameElement.classList.remove('success');
 				}
+			}
+
+			function updateFileList(fileNames) {
+                const fileNameListElement = document.getElementById('fileNameList');
+                fileNameListElement.innerHTML = '';
+				var index = 0;
+                fileNames.forEach(fileName => {
+                    const fileItem = document.createElement('div');
+					fileItem.classList.add('file-item');
+                    fileItem.textContent = fileName;
+					
+					const removeButton = document.createElement('button');
+					removeButton.textContent = 'x';
+					removeButton.classList.add('remove-btn');
+					removeButton.onclick = (() => {
+						const currentIndex = index; // Capture the current index value in a closure
+						return () => vscode.postMessage({ command: 'removeFile', index: currentIndex });
+					})();
+					index += 1;
+					fileItem.appendChild(removeButton);			
+                    fileNameListElement.appendChild(fileItem);
+                });
+            }
+
+			function removeFile(index) {
+				vscode.postMessage({ command: 'removeFile', index: index});
 			}
 
 			function addMessageToChat(message, className) {
@@ -586,6 +776,10 @@ function getWebviewContent(information) {
                     model: selectedModel
                 });
             }
+			function updateProgress(progress) {
+                const progressBar = document.getElementById('progressBar');
+                progressBar.style.width = progress;
+            }
 
 			// Listen for messages from the extension
 			window.addEventListener('message', event => {
@@ -600,6 +794,10 @@ function getWebviewContent(information) {
 					case 'updateBotText':
 						updateBotText(message.id, message.textId, message.text);
 						break;
+					case 'updateFileList':
+						const { files } = message;
+						updateFileList(files);
+						break;
 					case 'startBotCode':
 						startBotCode(message.id, message.codeId);
 						break;
@@ -611,6 +809,9 @@ function getWebviewContent(information) {
 						document.getElementById('sendButton').disabled = false;
 						isStreaming = false;
  						sendButton.style.backgroundColor = '#4CAF50';
+						break;
+					case 'updateProgress':
+						updateProgress(message.percent);
 						break;
 				}
 			});
