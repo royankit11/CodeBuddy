@@ -95,28 +95,30 @@ function activate(context) {
 					vector: documentEmbeddings,
 					topK: 1
 				});
-								
-				console.log(queryResponse);
 				let matches = queryResponse.matches;
 
-				let id = matches[0].id;
+				console.log(matches[0]);
 
-				const docRef = doc(firestoreDB, "DOCS", id);
-				const docSnap = await getDoc(docRef);
+				if(matches[0]) {
+					let id = matches[0].id;
+					let score = matches[0].score;
+					console.log(id);
+					console.log(score);
 
-				// Check if the document exists
-				if (docSnap.exists()) {
-					// Document data
-					console.log("Document data:", docSnap.data().text);
-					userInput = userInput + ". Here is some context: " + docSnap.data().text;
-				} 
+					const docRef = doc(firestoreDB, "DOCS", id);
+					const docSnap = await getDoc(docRef);
+
+					if (docSnap.exists()) {
+						//userInput = userInput + ". Here are some files that might provide context. It may or may not be pertinent to the query but keep it in mind: "
+						//+ docSnap.data().text;
+						userInput = "Context: " + docSnap.data().text + ". Query: " + userInput;
+					} 
+				}
+
 				if (selectedText) {
 					userInput = userInput + ". Here is the highlighted code: " + selectedText;
 				}
 
-				// if(uploadedFileText) {
-				// 	userInput = userInput + ". Here is the relevant file: " + uploadedFileText;
-				// }
                 await handleUserInput(panel, userInput);
             } else if (message.command === 'stopStream') {
                 await stopStream(panel);
@@ -190,6 +192,14 @@ class MyInlineCompletionItemProvider {
 }
 
 async function handleUserInput(panel, userInput) {
+	let codeMode = false;
+	let codeId = null;
+	let textId = "textId-" + Date.now();
+	const messageId = Date.now(); // Unique identifier for the message
+
+	panel.webview.postMessage({ command: 'startBotMessage', id: messageId });
+	panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
+
     abortController = new AbortController();
 	if(isGPT) {
 		currentStream = await openai.chat.completions.create({
@@ -200,14 +210,6 @@ async function handleUserInput(panel, userInput) {
 	} else {
 		currentStream = await ollama.stream(userInput, { signal: abortController.signal });
 	}
-
-	let codeMode = false;
-	let codeId = null;
-	let textId = "textId-" + Date.now();
-	const messageId = Date.now(); // Unique identifier for the message
-
-	panel.webview.postMessage({ command: 'startBotMessage', id: messageId });
-	panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
 
 	for await (const chunk of currentStream) {
 		if(isGPT) {
@@ -531,6 +533,7 @@ function getWebviewContent(information) {
 				const messageElement = document.getElementById('botMessage-' + id);
 				const textElement = document.createElement('p');
 				textElement.id = textId;
+				textElement.textContent = "Responding...";
 				messageElement.appendChild(textElement);
 				
                 const chatContainer = document.getElementById('chatContainer');
@@ -541,7 +544,12 @@ function getWebviewContent(information) {
                 const messageElement = document.getElementById('botMessage-' + id);
                 if (messageElement) {
 					const textElement = document.getElementById(textId);
-                    textElement.textContent += text;
+					if(textElement.textContent === "Responding...") {
+						textElement.textContent = text;
+					} else {
+						textElement.textContent += text;
+					}
+
                     const chatContainer = document.getElementById('chatContainer');
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                 }
