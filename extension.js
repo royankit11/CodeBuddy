@@ -133,15 +133,16 @@ let uploadedFiles = [];
 					let docScore = docMatches[0].score;
 					console.log(docID);
 					console.log(docScore);
-					
-					const docRef = doc(firestoreDB, "DOCS", docID);
-					const docSnap = await getDoc(docRef);
+					if(docScore > 0.3) {
+						const docRef = doc(firestoreDB, "DOCS", docID);
+						const docSnap = await getDoc(docRef);
 
-					if (docSnap.exists()) {
-						//userInput = userInput + ". Here are some files that might provide context. It may or may not be pertinent to the query but keep it in mind: "
-						//+ docSnap.data().text;
-						userInput = "Context: " + docSnap.data().text + ". Query: " + userInput;
-					} 
+						if (docSnap.exists()) {
+							//userInput = userInput + ". Here are some files that might provide context. It may or may not be pertinent to the query but keep it in mind: "
+							//+ docSnap.data().text;
+							userInput = "Context: " + docSnap.data().text + ". Query: " + userInput;
+						} 
+					}
 				}
 
 				if(codeMatches[0]) {
@@ -149,14 +150,16 @@ let uploadedFiles = [];
 					let codeScore = codeMatches[0].score;
 					console.log(codeID);
 					console.log(codeScore);
-					
-					const codeRef = doc(firestoreDB, "CODE", codeID);
-					const codeSnap = await getDoc(codeRef);
 
-					if (codeSnap.exists()) {
-						//userInput = userInput + ". Here are some files that might provide context. It may or may not be pertinent to the query but keep it in mind: "
-						//+ docSnap.data().text;
-						userInput += ". Relevant Code: " + codeSnap.data().text;
+					if(codeScore > 0.3) {
+						const codeRef = doc(firestoreDB, "CODE", codeID);
+						const codeSnap = await getDoc(codeRef);
+
+						if (codeSnap.exists()) {
+							//userInput = userInput + ". Here are some files that might provide context. It may or may not be pertinent to the query but keep it in mind: "
+							//+ docSnap.data().text;
+							userInput += ". Relevant Code: " + codeSnap.data().text;
+						}
 					} 
 				}
 
@@ -290,34 +293,23 @@ async function handleUserInput(panel, userInput) {
 }
 
 async function storeCodebase(codebase, fileName) {
-    const lines = codebase.split('\n');
-    const chunkSize = 20; // Number of lines per chunk
-    let chunks = [];
-    for (let i = 0; i < lines.length; i += chunkSize) {
-        const chunk = lines.slice(i, i + chunkSize).join('\n');
-        chunks.push({ text: chunk, index: Math.floor(i / chunkSize) });
-    }
-
 	fileName = fileName.split('/').pop();
 	console.log(fileName);
 
-    for (const chunk of chunks) {
-        const chunkEmbeddings = await embeddings.embedQuery(chunk.text);
-        await index.namespace('code').upsert([
-            {
-                id: `${fileName}-chunk-${chunk.index}`,
-                values: chunkEmbeddings
-            }
-        ]);
+    const codeEmbed = await embeddings.embedQuery(codebase);
+	await index.namespace('code').upsert([
+		{
+			id: fileName,
+			values: codeEmbed
+		}
+	]);
 
-        const chunkData = {
-            text: chunk.text,
-            index: chunk.index,
-        };
+	const chunkData = {
+		text: codebase
+	};
 
-        const document = doc(firestoreDB, "CODE", `${fileName}-chunk-${chunk.index}`);
-        await setDoc(document, chunkData);
-    }
+	const document = doc(firestoreDB, "CODE", fileName);
+	await setDoc(document, chunkData);
 
     console.log("Codebase stored successfully.");
 }
@@ -389,7 +381,11 @@ async function handleFileUpload(panel, file, fileName) {
         command: 'updateFileList',
         files: uploadedFiles
     });
-	
+
+	panel.webview.postMessage({
+        command: 'updateProgress',
+        percent: '0%'
+    });
 }
 
 async function removeFileFromDB(panel, ind) {
@@ -548,6 +544,7 @@ function getWebviewContent(information) {
 				background-color: #f0f0f0;
 				border-radius: 5px;
 				margin-top: 10px;
+				display: none;
 			}
 			
 			#progressBar {
@@ -651,6 +648,7 @@ function getWebviewContent(information) {
                     reader.onload = () => {
                         const fileContent = reader.result.split(',')[1];
 						const fileName = file.name;
+						showProgressBar();
                         vscode.postMessage({
                             command: 'uploadFile',
                             file: fileContent,
@@ -779,7 +777,20 @@ function getWebviewContent(information) {
 			function updateProgress(progress) {
                 const progressBar = document.getElementById('progressBar');
                 progressBar.style.width = progress;
+				if (progress === '100%') {
+					setTimeout(() => {
+						hideProgressBar(); // Hide progress bar when upload completes
+					}, 500); // Allow some time for the user to see 100% completion
+				}
             }
+
+			function showProgressBar() {
+				document.getElementById('progressBarContainer').style.display = 'block';
+			}
+			
+			function hideProgressBar() {
+				document.getElementById('progressBarContainer').style.display = 'none';
+			}
 
 			// Listen for messages from the extension
 			window.addEventListener('message', event => {
