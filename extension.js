@@ -151,7 +151,7 @@ let uploadedFiles = [];
 					console.log(codeID);
 					console.log(codeScore);
 
-					if(codeScore > 0.3) {
+					if(codeScore > 0.2) {
 						const codeRef = doc(firestoreDB, "CODE", codeID);
 						const codeSnap = await getDoc(codeRef);
 
@@ -210,19 +210,19 @@ class MyInlineCompletionItemProvider {
             this.timer = setTimeout(async () => {
                 try {
 					vscode.window.setStatusBarMessage('Autocompleting...');
-                    const text = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
+                    const startText = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
+					const endText = document.getText(new vscode.Range(position, new vscode.Position(document.lineCount, 0)));
 					const language = document.languageId;
-					console.log(language);
-					if(text === this.latestPrompt) {
+					if(startText === this.latestPrompt) {
 						let completionItem = new vscode.InlineCompletionItem(this.latestCompletion);
 						completionItem.range = new vscode.Range(position, position);
 						resolve(new vscode.InlineCompletionList([completionItem]));
 					} else {
-						this.latestPrompt = text;
+						this.latestPrompt = startText;
 						let completionText = '';
-						const stream = await ollama.stream("Complete just this line of code. Language is " + language + ". Just code, no other text. " + 
-						"Do not add triple quotes or the coding language. Don't write what I've already written." +
-						"Here is the start of the line: " + text);
+						const stream = await ollama.stream("Complete the code. Language is " + language + ". Just code, no other text. " + 
+						"Do not add triple quotes or the coding language. If I've already started part of a line, don't write what I already have." +
+						"Here is code before the cursor: \n" + startText + "\n Here is the code after: \n" + endText);
 						
 						for await (const chunk of stream) {
 							completionText += chunk;
@@ -429,6 +429,7 @@ function getWebviewContent(information) {
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
 		<title>Chat Interface</title>
+		<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
 		<style>
 			body {
 				font-family: Arial, sans-serif;
@@ -486,37 +487,47 @@ function getWebviewContent(information) {
 			#inputBox {
 				flex: 1;
 				padding: 10px;
-				font-size: 16px;
-				border: 1px solid #ccc;
-				border-radius: 5px;
+				font-size: 14px;
+				border: none;
+				border-radius: 15px;
+				background-color:  #4e5054;
+				color: white;
 				outline: none;
+				resize: none; /* Prevent resizing */
+				overflow: hidden;
+				overflow-wrap: break-word; /* Ensure text wraps to the next line */
+				white-space: pre-wrap; /* Preserve whitespace and wrap text */
+				height: 20px; /* Set height to auto */
+				min-height: 20px; /* Set a minimum height */
+				max-height: 100px; /* Set a maximum height */
+				width: 100%;
+				line-height: 1.5em;
 			}
 			#uploadButton {
-				padding: 10px 20px;
+				padding: 5px 5px;
 				font-size: 16px;
-				margin-left: 10px;
+				margin-right: 10px;
 				border: none;
-				background-color: #4CAF50;
 				color: white;
 				border-radius: 5px;
 				cursor: pointer;
+				background-color: transparent;
 			}
 			#uploadButton:hover {
-				background-color: #45a049;
+				color: #4e5054;
 			}
-
 			#sendButton {
-				padding: 10px 20px;
-				font-size: 16px;
+				padding: 10px 10px;
+				font-size: 20px;
 				margin-left: 10px;
 				border: none;
-				background-color: #4CAF50;
+				background-color: transparent;
 				color: white;
 				border-radius: 5px;
 				cursor: pointer;
 			}
 			#sendButton:hover {
-				background-color: #45a049;
+				color: #4e5054;
 			}
 			#fileNameList {
                 margin-bottom: 10px;
@@ -602,25 +613,47 @@ function getWebviewContent(information) {
             <div id="progressBar"></div>
         </div>
 		<div id="inputContainer">
-			<input type="text" id="inputBox" placeholder="Type your message here...">
-			<button id="uploadButton" onclick="uploadFile()">Upload</button>
-			<button id="sendButton" onclick="sendMessage()">Send</button>
+			<button id="uploadButton" onclick="uploadFile()"><i class="fas fa-paperclip"></i></button>
+			<textarea id="inputBox" placeholder="Message Ollama..."></textarea>
+			<button id="sendButton" onclick="sendMessage()">
+				<i class="fas fa-arrow-right" id="sendIcon"></i>
+				<i class="fas fa-stop" id="stopIcon" style="display: none;"></i>
+			</button>
 		</div>
 		<script>
 			const vscode = acquireVsCodeApi();
 			let isStreaming = false;
 
+			document.addEventListener('DOMContentLoaded', (event) => {
+				const inputBox = document.getElementById('inputBox');
+			
+				inputBox.addEventListener('input', function() {
+					// Set the height according to the scroll height, but not more than the max-height
+
+					if(this.value.length > 50) {
+						this.style.height = 'auto';
+						this.style.overflow = 'auto';
+						this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+					} else {
+						this.style.height = '20px';
+						this.style.overflow = 'hidden';
+					}
+				});
+			});
+
 			function sendMessage() {
 				const inputBox = document.getElementById('inputBox');
 				const sendButton = document.getElementById('sendButton');
+				const sendIcon = document.getElementById('sendIcon');
+				const stopIcon = document.getElementById('stopIcon');
 
 				if(isStreaming) {
 					vscode.postMessage({
 						command: 'stopStream'
 					});
-					sendButton.textContent = 'Send';
+					sendIcon.style.display = 'inline';
+					stopIcon.style.display = 'none';
 					sendButton.disabled = true;
-					sendButton.style.backgroundColor = '#4CAF50';
 				} else {
 					const message = inputBox.value;
 					if (message.trim()) {
@@ -630,8 +663,8 @@ function getWebviewContent(information) {
 							text: message
 						});
 						inputBox.value = '';
-						sendButton.textContent = 'Stop';
-						sendButton.style.backgroundColor = '#fc0f03';
+						sendIcon.style.display = 'none';
+						stopIcon.style.display = 'inline';
 						isStreaming = true;
 					}
 				}
@@ -816,10 +849,10 @@ function getWebviewContent(information) {
 						updateBotCode(message.id, message.codeId, message.code);
 						break;
 					case 'stopStream':
-						document.getElementById('sendButton').textContent = 'Send';
+						sendIcon.style.display = 'inline';
+						stopIcon.style.display = 'none';
 						document.getElementById('sendButton').disabled = false;
 						isStreaming = false;
- 						sendButton.style.backgroundColor = '#4CAF50';
 						break;
 					case 'updateProgress':
 						updateProgress(message.percent);
