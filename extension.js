@@ -81,7 +81,7 @@ let uploadedFiles = [];
 
         await storeCodebase(codebase, fileName);
 
-        vscode.window.showInformationMessage('Codebase stored successfully!');
+		vscode.window.setStatusBarMessage('Codebase stored successfully!');
     });
 
     let openChatCommand = vscode.commands.registerCommand('code-assistant.openChat', async function () {
@@ -92,7 +92,10 @@ let uploadedFiles = [];
             { enableScripts: true }
         );
 
-        panel.webview.html = getWebviewContent("Hi there! Ask me anything");
+        panel.webview.html = getWebviewContent();
+		panel.webview.postMessage({ command: 'startBotMessage', id: "first" , llmModel: ollama.model});
+		panel.webview.postMessage({ command: 'startBotText', id: "first", textId: "first" });
+		panel.webview.postMessage({ command: 'updateBotText', id: "first", textId: "first", text: "Hi there, ask me anything!"});
 
 		//Loop through every doc in firebase DOCS collection and add to uploaded docs array
 		try {
@@ -252,7 +255,7 @@ async function handleUserInput(panel, userInput) {
 	let textId = "textId-" + Date.now();
 	const messageId = Date.now(); // Unique identifier for the message
 
-	panel.webview.postMessage({ command: 'startBotMessage', id: messageId });
+	panel.webview.postMessage({ command: 'startBotMessage', id: messageId , llmModel: ollama.model});
 	panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
 
     abortController = new AbortController();
@@ -422,7 +425,7 @@ async function changeModel(selectedModel) {
     vscode.window.showInformationMessage(`Model changed to: ${selectedModel}`);
 }
 
-function getWebviewContent(information) {
+function getWebviewContent() {
 	return `<!DOCTYPE html>
 	<html lang="en">
 	<head>
@@ -458,25 +461,54 @@ function getWebviewContent(information) {
 				flex: 1;
 				display: flex;
 				flex-direction: column;
-				padding: 10px;
 				box-sizing: border-box;
 				overflow-y: auto;
+			}
+
+			.icon-tag-container {
+				display: flex;
+				align-items: center;
+				margin-bottom: 5px; /* Adjust as needed */
+			}
+			
+			.user-icon {
+				margin-right: 8px; /* Space between icon and tag */
+				font-size: 20px; /* Adjust size as needed */
+				color: #838ef2;
+			}
+
+			.llm-icon {
+				margin-right: 8px; /* Space between icon and tag */
+				font-size: 20px; /* Adjust size as needed */
+				color: #98FB98;
+			}
+
+			.message {
+				padding: 10px 12px;
+				max-width: 100%;
+				width: 95%;
+				color: black;
 				border-bottom: 1px solid #ccc;
 			}
-			.message {
-				margin-bottom: 10px;
-				padding: 8px 12px;
-				border-radius: 15px;
-				max-width: 100%;
-				color: black;
+
+			.horizontal-line {
+				border: none;
+				height: 1px;
+				background-color: #ccc;
+				width: 100%; /* Set the width to 100% */
+				margin-top: 5px; /* Adjust margin top as needed */
+				margin-bottom: 5px; /* Adjust margin bottom as needed */
 			}
+
 			.userMessage {
-				align-self: flex-end;
-				background-color: #dcf8c6;
+				align-self: flex-start;
+				background-color: transparent;
+				color: white;
 			}
 			.botMessage {
 				align-self: flex-start;
-				background-color: #ececec;
+				background-color: #262525;
+				color: white;
 			}
 			#inputContainer {
 				display: flex;
@@ -530,24 +562,68 @@ function getWebviewContent(information) {
 				color: #4e5054;
 			}
 			#fileNameList {
-                margin-bottom: 10px;
-				margin-left: 10px;
-				margin-top: 10px;
-				font-size: 15px
-            }
-			.file-item {
 				display: flex;
-				justify-content: space-between;
+				flex-wrap: wrap;
 				align-items: center;
 				padding: 5px;
+				border-radius: 5px;
+				margin: 10px 0;
+			}
+		
+			.file-item {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				margin-right: 10px;
+				padding: 7px;
+				background-color: transparent;
 				border: 1px solid #ccc;
+				border-radius: 5px;
+				position: relative;
+			}
+		
+			.file-item-icon {
+				font-size: 18px;
+				margin-right: 5px;
+			}
+		
+			.file-item-name {
+				margin-right: 5px;
+			}
+
+			.llm-tag {
+				font-size: 16px;
+				color: #ccc;
+				font-weight: bold;
+				margin-top: 10px;
 				margin-bottom: 5px;
 			}
+
+			.user-tag {
+				font-size: 16px;
+				color: #ccc;
+				font-weight: bold;
+				margin-top: 10px;
+				margin-bottom: 10px;
+			}
+		
 			.remove-btn {
-				background: red;
+				background: black;
 				color: white;
 				border: none;
+				border-radius: 50%;
+				border: 1px solid #ccc;
 				cursor: pointer;
+				padding: 5px;
+				font-size: 8px;
+				position: absolute; /* Position absolute to remove it from the normal flow */
+				top: -10px; /* Adjust top position */
+				right: -10px;
+				width: 8px; /* Set width equal to height */
+    			height: 8px;
+				display: flex; /* Use flexbox */
+				justify-content: center; /* Center horizontally */
+				align-items: center;
 			}
 			#progressBarContainer {
 				width: 100%;
@@ -606,7 +682,6 @@ function getWebviewContent(information) {
             </select>
         </div>
 		<div id="chatContainer">
-			<div class="message botMessage">${information}</div>
 		</div>
 		<div id="fileNameList"></div>
 		<div id="progressBarContainer">
@@ -614,7 +689,7 @@ function getWebviewContent(information) {
         </div>
 		<div id="inputContainer">
 			<button id="uploadButton" onclick="uploadFile()"><i class="fas fa-paperclip"></i></button>
-			<textarea id="inputBox" placeholder="Message Ollama..."></textarea>
+			<textarea id="inputBox" placeholder="Ask Code Buddy a question..."></textarea>
 			<button id="sendButton" onclick="sendMessage()">
 				<i class="fas fa-arrow-right" id="sendIcon"></i>
 				<i class="fas fa-stop" id="stopIcon" style="display: none;"></i>
@@ -713,11 +788,17 @@ function getWebviewContent(information) {
                 fileNames.forEach(fileName => {
                     const fileItem = document.createElement('div');
 					fileItem.classList.add('file-item');
-                    fileItem.textContent = fileName;
+
+					const icon = document.createElement('i');
+					icon.classList.add('fas', 'fa-file-lines', 'file-item-icon');
+					fileItem.appendChild(icon);
+					const fileNameElement = document.createElement('span');
+					fileNameElement.textContent = fileName;
+					fileNameElement.classList.add('file-item-name');
+					fileItem.appendChild(fileNameElement);
 					
-					const removeButton = document.createElement('button');
-					removeButton.textContent = 'x';
-					removeButton.classList.add('remove-btn');
+					const removeButton = document.createElement('i');
+					removeButton.classList.add('fas', 'fa-x', 'remove-btn');
 					removeButton.onclick = (() => {
 						const currentIndex = index; // Capture the current index value in a closure
 						return () => vscode.postMessage({ command: 'removeFile', index: currentIndex });
@@ -736,15 +817,50 @@ function getWebviewContent(information) {
 				const chatContainer = document.getElementById('chatContainer');
 				const messageElement = document.createElement('div');
 				messageElement.className = 'message ' + className;
-				messageElement.textContent = message;
+
+				const iconTagContainer = document.createElement('div');
+    			iconTagContainer.className = 'icon-tag-container';
+
+				const icon = document.createElement('i');
+				icon.classList.add('fas', 'fa-user-circle', 'user-icon');
+				iconTagContainer.appendChild(icon);
+
+			
+				const userTag = document.createElement('div');
+				userTag.textContent = 'User';
+				userTag.className = 'user-tag';
+				iconTagContainer.appendChild(userTag);
+
+				messageElement.appendChild(iconTagContainer);
+
+				const messageContent = document.createElement('div');
+				messageContent.textContent = message; // Set the message content separately
+				messageElement.appendChild(messageContent);
+
 				chatContainer.appendChild(messageElement);
 				chatContainer.scrollTop = chatContainer.scrollHeight;
 			}
 
-			function startBotMessage(id) {
+			function startBotMessage(id, llmModel) {
                 const chatContainer = document.getElementById('chatContainer');
                 const messageElement = document.createElement('div');
                 messageElement.className = 'message botMessage';
+
+				const iconTagContainer = document.createElement('div');
+    			iconTagContainer.className = 'icon-tag-container';
+
+				const icon = document.createElement('i');
+				icon.classList.add('fas', 'fa-robot', 'llm-icon');
+				iconTagContainer.appendChild(icon);
+
+				
+				const llmTag = document.createElement('div');
+				llmTag.textContent = llmModel;
+				llmTag.className = 'llm-tag';
+				iconTagContainer.appendChild(llmTag);
+
+				messageElement.appendChild(iconTagContainer);
+
                 messageElement.id = 'botMessage-' + id;
                 chatContainer.appendChild(messageElement);
                 chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -830,7 +946,7 @@ function getWebviewContent(information) {
 				const message = event.data;
 				switch (message.command) {
 					case 'startBotMessage':
-						startBotMessage(message.id);
+						startBotMessage(message.id, message.llmModel);
 						break;
 					case 'startBotText':
 						startBotText(message.id, message.textId);
