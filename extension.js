@@ -17,11 +17,12 @@ let firestoreDB = getFirestore();
 const vscode = require('vscode');
 const { Ollama } = require("@langchain/community/llms/ollama");
 const pdfParse = require('pdf-parse');
-const { exec } = require('child_process');
+const { exec , spawn } = require('child_process');
 const { OpenAI } = require("openai");
 const AbortController = require('abort-controller');
 const { Pinecone } = require('@pinecone-database/pinecone');
 const { OllamaEmbeddings } = require('@langchain/community/embeddings/ollama');
+let installedModels = [];
 
 let selectedText = '';
 let uploadedFileText = '';
@@ -33,6 +34,7 @@ let ollama = new Ollama({
     baseUrl: "http://localhost:11434", // Default value
     model: "phi3", // Default value
 });
+
 
 const embeddings = new OllamaEmbeddings({
 	model: "phi3", // default value
@@ -84,10 +86,10 @@ let uploadedFiles = [];
 		vscode.window.setStatusBarMessage('Codebase stored successfully!');
     });
 
-    let openChatCommand = vscode.commands.registerCommand('code-assistant.openChat', async function () {
+    let openChatCommand = vscode.commands.registerCommand('code-assistant.codeBuddy', async function () {
         const panel = vscode.window.createWebviewPanel(
             'chatPanel',
-            'Chat',
+            'Code Buddy',
             vscode.ViewColumn.Beside,
             { enableScripts: true }
         );
@@ -112,63 +114,98 @@ let uploadedFiles = [];
 			files: uploadedFiles
 		});
 
+		exec('ollama list', (err, stdout, stderr) => {
+			if (err) {
+				console.error(`Error listing ollama models: ${err}`);
+				return;
+			}
+			const lines = stdout.split('\n');
+	
+			// Remove the header line and any empty lines
+			const modelLines = lines.slice(1).filter(line => line.trim() !== '');
+	
+			// Extract the model names
+			installedModels = modelLines.map(line => line.split(/\s+/)[0].split(':')[0]);
+	
+			console.log(`Ollama models: ${installedModels}`);
+			if(installedModels.includes("phi3")) {
+				panel.webview.postMessage({
+					command: 'showInstallButton',
+					visible: false,
+					model: "phi3"
+				});
+			} else {
+				panel.webview.postMessage({
+					command: 'showInstallButton',
+					visible: true,
+					model: "phi3"
+				});
+			}
+	
+		});
         panel.webview.onDidReceiveMessage(async message => {
             if (message.command === 'sendInput') {
+				if(!installedModels.includes(ollama.model)) {
+					vscode.window.showInformationMessage('Current model is not installed');
+					panel.webview.postMessage({ command: 'stopStream' });
+					return;
+				}
 				let userInput = message.text;
 
 				const embeddedInput = await embeddings.embedQuery(userInput);
-				const docResponse = await index.namespace('docs').query({
-					vector: embeddedInput,
-					topK: 1
-				});
+				try {
+					const docResponse = await index.namespace('docs').query({
+						vector: embeddedInput,
+						topK: 1
+					});
+	
+					const codeResponse = await index.namespace('code').query({
+						vector: embeddedInput,
+						topK: 1
+					});
+	
+					let docMatches = docResponse.matches;
+					let codeMatches = codeResponse.matches;
 
-				const codeResponse = await index.namespace('code').query({
-					vector: embeddedInput,
-					topK: 1
-				});
-
-				let docMatches = docResponse.matches;
-				let codeMatches = codeResponse.matches;
-
-
-				if(docMatches[0]) {
-					let docID = docMatches[0].id;
-					let docScore = docMatches[0].score;
-					console.log(docID);
-					console.log(docScore);
-					if(docScore > 0.3) {
-						const docRef = doc(firestoreDB, "DOCS", docID);
-						const docSnap = await getDoc(docRef);
-
-						if (docSnap.exists()) {
-							//userInput = userInput + ". Here are some files that might provide context. It may or may not be pertinent to the query but keep it in mind: "
-							//+ docSnap.data().text;
-							userInput = "Context: " + docSnap.data().text + ". Query: " + userInput;
+					if(docMatches[0]) {
+						let docID = docMatches[0].id;
+						let docScore = docMatches[0].score;
+						console.log(docID);
+						console.log(docScore);
+						if(docScore > 0.3) {
+							const docRef = doc(firestoreDB, "DOCS", docID);
+							const docSnap = await getDoc(docRef);
+	
+							if (docSnap.exists()) {
+								//userInput = userInput + ". Here are some files that might provide context. It may or may not be pertinent to the query but keep it in mind: "
+								//+ docSnap.data().text;
+								userInput = "Context: " + docSnap.data().text + ". Query: " + userInput;
+							} 
+						}
+					}
+	
+					if(codeMatches[0]) {
+						let codeID = codeMatches[0].id;
+						let codeScore = codeMatches[0].score;
+						console.log(codeID);
+						console.log(codeScore);
+	
+						if(codeScore > 0.2) {
+							const codeRef = doc(firestoreDB, "CODE", codeID);
+							const codeSnap = await getDoc(codeRef);
+	
+							if (codeSnap.exists()) {
+								//userInput = userInput + ". Here are some files that might provide context. It may or may not be pertinent to the query but keep it in mind: "
+								//+ docSnap.data().text;
+								userInput += ". Relevant Code: " + codeSnap.data().text;
+							}
 						} 
 					}
-				}
-
-				if(codeMatches[0]) {
-					let codeID = codeMatches[0].id;
-					let codeScore = codeMatches[0].score;
-					console.log(codeID);
-					console.log(codeScore);
-
-					if(codeScore > 0.2) {
-						const codeRef = doc(firestoreDB, "CODE", codeID);
-						const codeSnap = await getDoc(codeRef);
-
-						if (codeSnap.exists()) {
-							//userInput = userInput + ". Here are some files that might provide context. It may or may not be pertinent to the query but keep it in mind: "
-							//+ docSnap.data().text;
-							userInput += ". Relevant Code: " + codeSnap.data().text;
-						}
-					} 
+				} catch(exception) {
+					console.log(exception);
 				}
 
 				console.log(userInput);
-
-
 
 				if (selectedText) {
 					userInput = userInput + ". Here is the highlighted code: " + selectedText;
@@ -180,9 +217,13 @@ let uploadedFiles = [];
             } else if (message.command === 'uploadFile') {
                 await handleFileUpload(panel, message.file, message.fileName);
             } else if (message.command === 'changeModel') {
-                await changeModel(message.model);
+                await changeModel(panel, message.model);
             } else if (message.command === 'removeFile') {
 				await removeFileFromDB(panel, message.index);				
+			} else if (message.command === 'installModel') {
+				installModel(panel, message.model);
+			} else if (message.command === 'removeModel') {
+				removeModel(panel, message.model);
 			}
         });
 
@@ -269,6 +310,9 @@ async function handleUserInput(panel, userInput) {
 		currentStream = await ollama.stream(userInput, { signal: abortController.signal });
 	}
 
+	let language = 'javascript'; // default language
+	let languageNext = false; 
+
 	for await (const chunk of currentStream) {
 		if(isGPT) {
 			chunk = chunk.choices[0].delta
@@ -277,12 +321,21 @@ async function handleUserInput(panel, userInput) {
 		if (chunk.includes("```")) {
 			codeMode = !codeMode;
 			if (codeMode) {
-				codeId = "codeId-" + Date.now();
-				panel.webview.postMessage({ command: 'startBotCode', id: messageId, codeId: codeId });
+				languageNext = true;
+				// codeId = "codeId-" + Date.now();
+				// panel.webview.postMessage({ command: 'startBotCode', id: messageId, codeId: codeId });
 			} else {
 				textId = "textId-" + Date.now();
 				panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
 			}
+			continue;
+		}
+		if (languageNext) {
+			language = chunk;
+			console.log(language);
+			languageNext = false; // reset the flag
+			codeId = "codeId-" + Date.now();
+			panel.webview.postMessage({ command: 'startBotCode', id: messageId, codeId: codeId, language: language });
 			continue;
 		}
 
@@ -411,19 +464,97 @@ async function removeFileFromDB(panel, ind) {
 
 }
 
-async function changeModel(selectedModel) {
+async function changeModel(panel, selectedModel) {
     if (selectedModel == "GPT") {
         isGPT = true;
     } else {
-        ollama = new Ollama({
-            baseUrl: "http://localhost:11434",
-            model: selectedModel,
-        });
+        ollama.model = selectedModel;
         isGPT = false;
     }
+	if(installedModels.includes(selectedModel)) {
+		console.log("installed");
+		panel.webview.postMessage({
+			command: 'showInstallButton',
+			visible: false,
+			model: selectedModel
+		});
+	} else {
+		console.log("not installed");
+		panel.webview.postMessage({
+			command: 'showInstallButton',
+			visible: true,
+			model: selectedModel
+		});
+	}
     console.log(`Switching to model: ${selectedModel}`);
-    vscode.window.showInformationMessage(`Model changed to: ${selectedModel}`);
 }
+
+function installModel(panel, selectedModel) {
+	const ollamaProcess = spawn('ollama', ['pull', selectedModel]);
+	let logTimer;
+	let showP = 0;
+
+    ollamaProcess.stderr.on('data', (data) => {
+
+		showP += 1;
+		if(showP % 40 == 0) {
+			const dataStr = data.toString();
+        	const percentageRegex = /(\d+)%/;
+
+			// Extract percentage using regex
+			const match = dataStr.match(percentageRegex);
+			if (match) {
+				const percentage = match[1];
+				console.log(`Progress: ${percentage}%`);
+				panel.webview.postMessage({
+					command: 'updateProgress',
+					percent: percentage + '%'
+				});
+			}
+			if(percentage == 100) {
+				panel.webview.postMessage({
+					command: 'showInstallButton',
+					visible: false,
+					model: selectedModel
+				});
+			}
+		}
+		
+    });
+
+    ollamaProcess.on('close', (code) => {
+        if (code !== 0) {
+            console.error(`Error pulling ollama model: ${code}`);
+            return;
+        }
+        console.log(`Ollama pull completed successfully.`);
+        installedModels.push(selectedModel);
+		panel.webview.postMessage({
+			command: 'showInstallButton',
+			visible: false,
+			model: selectedModel
+		});
+    });
+}
+
+function removeModel(panel, selectedModel) {
+	const ollamaProcess = spawn('ollama', ['rm', selectedModel]);
+
+	ollamaProcess.on('close', (code) => {
+		if (code !== 0) {
+			console.error(`Error removing ollama model: ${code}`);
+			return;
+		}
+		console.log(`Ollama remove completed successfully.`);
+		installedModels = installedModels.filter(model => model !== selectedModel);
+		panel.webview.postMessage({
+			command: 'showInstallButton',
+			visible: true,
+			model: selectedModel
+		});
+	});
+}
+
 
 function getWebviewContent() {
 	return `<!DOCTYPE html>
@@ -431,8 +562,9 @@ function getWebviewContent() {
 	<head>
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
-		<title>Chat Interface</title>
+		<title>Code Buddy</title>
 		<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+		<link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/themes/prism-tomorrow.min.css" rel="stylesheet" />
 		<style>
 			body {
 				font-family: Arial, sans-serif;
@@ -444,19 +576,51 @@ function getWebviewContent() {
 			}
 			#header {
                 display: flex;
-                justify-content: space-between;
+				justify-content: flex-end;
                 align-items: center;
                 padding: 10px;
                 border-bottom: 1px solid #ccc;
                 box-sizing: border-box;
             }
+			#installButtonContainer {
+				margin-right: 10px;
+			}
             #modelSelect {
                 padding: 10px;
-                font-size: 12px;
-                border: 1px solid #ccc;
+                font-size: 15px;
+				background-color: #262525;
+				color: white;
                 border-radius: 5px;
-                outline: none;
             }
+			.installButton {
+				padding: 10px;
+				font-size: 13px;
+				background-color: #1886d9;
+				color: white;
+				border-radius: 5px;
+				border: none; /* Remove default button border */
+				cursor: pointer; /* Change cursor to pointer on hover */
+				transition: background-color 0.3s, box-shadow 0.3s; /* Smooth transition */
+			}
+			.installButton:hover {
+				background-color: #0066cc; /* Darker shade of blue on hover */
+				box-shadow: 0 0 5px rgba(0, 0, 0, 0.3); /* Add shadow on hover */
+			}
+			.removeModelButton {
+				padding: 10px;
+				font-size: 13px;
+				background-color: transparent;
+				color: #fc2830;
+				border-radius: 5px;
+				border: 1px solid #fc2830; /* Remove default button border */
+				cursor: pointer; /* Change cursor to pointer on hover */
+				transition: background-color 0.3s, box-shadow 0.3s; /* Smooth transition */
+			}
+			.removeModelButton:hover {
+				background-color: #fc2830; /* Darker shade of blue on hover */
+				color: white;
+				box-shadow: 0 0 5px rgba(0, 0, 0, 0.3); /* Add shadow on hover */
+			}
 			#chatContainer {
 				flex: 1;
 				display: flex;
@@ -642,39 +806,14 @@ function getWebviewContent() {
 				transition: width 0.3s ease-in-out; /* Transition effect for width changes */
 			}
 			pre {
-				background: #000;
-				color: #fff;
-				border: none;
-				padding: 0;
-				overflow-x: auto;
-			}
-		
-			pre code {
-				display: block;
-				font-family: 'Fira Code', monospace;
-				font-size: 14px;
-				line-height: 1.6;
-				background: none;
-				padding: 0;
-			}
-		
-			.language-plaintext {
-				color: #fff;
-			}
-		
-			.language-javascript {
-				color: #9cdcfe; /* Change to the appropriate color for JavaScript keywords */
-			}
-		
-			.language-python {
-				color: #4ec9b0; /* Change to the appropriate color for Python keywords */
+				border-radius: 8px;
 			}
 		</style>
 	</head>
 	<body>
 		<div id="header">
-            <div>Select Model:</div>
-            <select id="modelSelect" onchange="changeModel()">
+			<div id="installButtonContainer" style="margin-right: 10px;"></div>
+		 	<select id="modelSelect" onchange="changeModel()">
                 <option value="phi3">phi3</option>
                 <option value="llama2">llama2</option>
                 <option value="codellama">codellama</option>
@@ -695,6 +834,11 @@ function getWebviewContent() {
 				<i class="fas fa-stop" id="stopIcon" style="display: none;"></i>
 			</button>
 		</div>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/prism.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-java.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/9000.0.1/components/prism-python.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/9000.0.1/components/prism-java.min.js"></script>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-javascript.min.js"></script>
 		<script>
 			const vscode = acquireVsCodeApi();
 			let isStreaming = false;
@@ -714,7 +858,15 @@ function getWebviewContent() {
 						this.style.overflow = 'hidden';
 					}
 				});
+
+				inputBox.addEventListener('keydown', function(event) {
+					if (event.key === 'Enter' && !event.shiftKey) {
+						event.preventDefault(); // Prevent the default action (new line in textarea)
+						sendMessage(); // Call the sendMessage function
+					}
+				});
 			});
+
 
 			function sendMessage() {
 				const inputBox = document.getElementById('inputBox');
@@ -893,11 +1045,12 @@ function getWebviewContent() {
             }
 
 
-            function startBotCode(id, codeId) {
+            function startBotCode(id, codeId, language) {
                 const messageElement = document.getElementById('botMessage-' + id);
                 const preElement = document.createElement('pre');
                 const codeElement = document.createElement('code');
                 codeElement.id = codeId;
+				codeElement.className = 'language-' + language;
                 preElement.appendChild(codeElement);
                 messageElement.appendChild(preElement);
 
@@ -911,6 +1064,7 @@ function getWebviewContent() {
 				if (messageElement) {
 					const codeElement = document.getElementById(codeId);
 					codeElement.textContent += code;
+					Prism.highlightElement(codeElement);
 					const chatContainer = document.getElementById('chatContainer');
 					chatContainer.scrollTop = chatContainer.scrollHeight;
 				}
@@ -941,6 +1095,42 @@ function getWebviewContent() {
 				document.getElementById('progressBarContainer').style.display = 'none';
 			}
 
+			function showInstallButton(visible, model) {
+			 	const installButtonContainer = document.getElementById('installButtonContainer');
+                installButtonContainer.innerHTML = ''; // Clear any existing content
+				
+				if(visible) {
+					const installButton = document.createElement('button');
+					installButton.textContent = 'Install';
+					installButton.className = "installButton";
+
+					installButton.onclick = function() {
+						showProgressBar();
+						vscode.postMessage({
+							command: 'installModel',
+							model: model
+						});
+						installButton.textContent = 'Installing...';
+						installButton.style.backgroundColor = '#0e8032';
+					};
+
+					installButtonContainer.appendChild(installButton);
+				} else {
+					const removeModelButton = document.createElement('button');
+					removeModelButton.textContent = 'Remove';
+					removeModelButton.className = "removeModelButton";
+
+					removeModelButton.onclick = function() {
+						vscode.postMessage({
+							command: 'removeModel',
+							model: model
+						});
+					};
+
+					installButtonContainer.appendChild(removeModelButton);
+				}
+			}
+
 			// Listen for messages from the extension
 			window.addEventListener('message', event => {
 				const message = event.data;
@@ -959,7 +1149,7 @@ function getWebviewContent() {
 						updateFileList(files);
 						break;
 					case 'startBotCode':
-						startBotCode(message.id, message.codeId);
+						startBotCode(message.id, message.codeId, message.language);
 						break;
 					case 'updateBotCode':
 						updateBotCode(message.id, message.codeId, message.code);
@@ -972,6 +1162,9 @@ function getWebviewContent() {
 						break;
 					case 'updateProgress':
 						updateProgress(message.percent);
+						break;
+					case 'showInstallButton':
+						showInstallButton(message.visible, message.model);
 						break;
 				}
 			});

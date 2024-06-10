@@ -14,12 +14,8 @@
   "contributes": {
     "commands": [
       {
-        "command": "code-assistant.fixCode",
-        "title": "Fix Code"
-      },
-      {
-        "command": "code-assistant.openChat",
-        "title": "Open Chat"
+        "command": "code-assistant.codeBuddy",
+        "title": "Code Buddy"
       }
     ]
   },
@@ -42,6 +38,7 @@
     "@pinecone-database/pinecone": "^2.2.2",
     "firebase": "^10.12.2",
     "firebase-admin": "^12.1.1",
+    "ollama-node": "^0.1.28",
     "openai": "^4.47.3",
     "pdf-parse": "^1.1.1"
   }
