@@ -1026,7 +1026,9 @@ function getWebviewContent() {
 				messageElement.appendChild(textElement);
 				
                 const chatContainer = document.getElementById('chatContainer');
-                chatContainer.scrollTop = chatContainer.scrollHeight;
+                if(chatContainer.scrollHeight - chatContainer.scrollTop <= chatContainer.clientHeight + 20) {
+					chatContainer.scrollTop = chatContainer.scrollHeight;
+				}
             }
 
 			function updateBotText(id, textId, text) {
@@ -1040,7 +1042,9 @@ function getWebviewContent() {
 					}
 
                     const chatContainer = document.getElementById('chatContainer');
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
+					if(chatContainer.scrollHeight - chatContainer.scrollTop <= chatContainer.clientHeight + 20) {
+						chatContainer.scrollTop = chatContainer.scrollHeight;
+					}
                 }
             }
 
@@ -1056,7 +1060,9 @@ function getWebviewContent() {
 
                 const chatContainer = document.getElementById('chatContainer');
                 chatContainer.appendChild(messageElement);
-                chatContainer.scrollTop = chatContainer.scrollHeight;
+                if(chatContainer.scrollHeight - chatContainer.scrollTop <= chatContainer.clientHeight + 20) {
+					chatContainer.scrollTop = chatContainer.scrollHeight;
+				}
             }
 
             function updateBotCode(id, codeId, code) {
@@ -1066,7 +1072,9 @@ function getWebviewContent() {
 					codeElement.textContent += code;
 					Prism.highlightElement(codeElement);
 					const chatContainer = document.getElementById('chatContainer');
-					chatContainer.scrollTop = chatContainer.scrollHeight;
+					if(chatContainer.scrollHeight - chatContainer.scrollTop <= chatContainer.clientHeight + 20) {
+						chatContainer.scrollTop = chatContainer.scrollHeight;
+					}
 				}
 			}
 			function changeModel() {
@@ -1117,7 +1125,7 @@ function getWebviewContent() {
 					installButtonContainer.appendChild(installButton);
 				} else {
 					const removeModelButton = document.createElement('button');
-					removeModelButton.textContent = 'Remove';
+					removeModelButton.textContent = 'Uninstall';
 					removeModelButton.className = "removeModelButton";
 
 					removeModelButton.onclick = function() {
