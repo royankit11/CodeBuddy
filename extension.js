@@ -1,18 +1,4 @@
-const { initializeApp } = require('firebase/app');
-const { getFirestore, doc, setDoc, getDoc, getDocs, collection, deleteDoc} = require('firebase/firestore');
-
-const firebaseConfig = {
-	apiKey: "AIzaSyDJKHWvywSOFaIreT0LL6e6EXCULwF5bMg",
-	authDomain: "spotifywrapped-45dcc.firebaseapp.com",
-	projectId: "spotifywrapped-45dcc",
-	storageBucket: "spotifywrapped-45dcc.appspot.com",
-	messagingSenderId: "777226242233",
-	appId: "1:777226242233:web:fe41a8c6bad67cb880b368",
-	measurementId: "G-3V6CDJVD22"
-  };
-
-let app = initializeApp(firebaseConfig);
-let firestoreDB = getFirestore();
+//Import all libraries
 
 const vscode = require('vscode');
 const { Ollama } = require("@langchain/community/llms/ollama");
@@ -22,20 +8,24 @@ const { OpenAI } = require("openai");
 const AbortController = require('abort-controller');
 const { Pinecone } = require('@pinecone-database/pinecone');
 const { OllamaEmbeddings } = require('@langchain/community/embeddings/ollama');
-let installedModels = [];
+const { Client } = require('pg');
 
+//Declare global variables
+let installedModels = [];
 let selectedText = '';
 let uploadedFileText = '';
 let activeEditor = null;
 let isGPT = false;
 let currentStream = null;
+let uploadedFiles = [];
 
+//Instatiate Ollama model
 let ollama = new Ollama({
     baseUrl: "http://localhost:11434", // Default value
     model: "phi3", // Default value
 });
 
-
+//Instatiate Ollama embeddings model for vectorization
 const embeddings = new OllamaEmbeddings({
 	model: "phi3", // default value
 	baseUrl: "http://localhost:11434", // default value
@@ -46,18 +36,99 @@ const openai = new OpenAI({
 });
 let abortController = new AbortController();
 
-
+//Instatiate vector DB
 const pc = new Pinecone({
 	apiKey: '9894c035-5130-48f8-9579-c9101ba21180', // Replace with your Pinecone API key
   });
 const index = pc.index("llm-extension")
 
-let uploadedFiles = [];
+
+//Instatiate Postgres DB
+const client = new Client({
+	host: 'localhost',
+	port: 5433, // Default port for PostgreSQL
+	user: 'postgres', // Replace with your PostgreSQL username
+	password: 'gutumuni', // Replace with your PostgreSQL password
+	database: 'postgres' // Replace with your PostgreSQL database name
+  });
 
 
+/****************************************************************************
+ * Code Completion Engine
+ ****************************************************************************/
+class MyInlineCompletionItemProvider {
+	constructor() {
+        // Initialize a timer variable
+        this.timer = null;
+
+		this.latestPrompt = ''
+		this.latestCompletion = '';
+    }
+
+    async provideInlineCompletionItems(document, position, context, token) {
+		clearTimeout(this.timer);
+
+		return new Promise((resolve) => {
+            // Set a new timer for 2 seconds
+            this.timer = setTimeout(async () => {
+                try {
+					vscode.window.setStatusBarMessage('Autocompleting...');
+                    const startText = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
+					const endText = document.getText(new vscode.Range(position, new vscode.Position(document.lineCount, 0)));
+					const language = document.languageId;
+					
+					//If the prompt is the same as the last one, return the same completion
+					if(startText === this.latestPrompt) {
+						let completionItem = new vscode.InlineCompletionItem(this.latestCompletion);
+						completionItem.range = new vscode.Range(position, position);
+						resolve(new vscode.InlineCompletionList([completionItem]));
+					} else {
+						this.latestPrompt = startText;
+						let completionText = '';
+						const stream = await ollama.stream("Complete the code. Language is " + language + ". Just code, no other text. " + 
+						"Do not add triple quotes or the coding language. If I've already started part of a line, don't write what I already have." +
+						"Here is code before the cursor: \n" + startText + "\n Here is the code after: \n" + endText);
+						
+						for await (const chunk of stream) {
+							completionText += chunk;
+						}
+						this.latestCompletion = completionText;
+
+						let completionItem = new vscode.InlineCompletionItem(completionText);
+						completionItem.range = new vscode.Range(position, position);
+
+						// Resolve the promise with the completion item
+						vscode.window.setStatusBarMessage('');
+
+						resolve(new vscode.InlineCompletionList([completionItem]));
+					}
+                } catch (error) {
+                    console.error("Error fetching completion:", error);
+
+                    // Resolve with an empty completion list in case of an error
+                    resolve(new vscode.InlineCompletionList([]));
+                }
+            }, 2000); // 2000 milliseconds = 2 seconds
+        });
+    }
+}
+
+/****************************************************************************
+ * Extension Activation
+ ****************************************************************************/
  function activate(context) {
     console.log('Congratulations, your extension "code-assistant" is now active!');
 
+	//Connect to the Postgres DB
+	client.connect()
+		.then(() => {
+			console.log('Connected to the database successfully!');
+		})
+		.catch(err => {
+			console.error('Connection error', err.stack);
+		});
+
+	//Start the Ollama server
     exec('ollama serve', (err, stdout, stderr) => {
         if (err) {
             console.error(`Error starting ollama serve: ${err}`);
@@ -67,7 +138,7 @@ let uploadedFiles = [];
         console.error(`ollama serve error output: ${stderr}`);
     });
 
-
+	//Check if any text has been selected	
     vscode.window.onDidChangeTextEditorSelection(event => {
         const editor = event.textEditor;
         if (editor) {
@@ -77,6 +148,7 @@ let uploadedFiles = [];
         }
     });
 
+	//Check if file was saved so that code can be stored in the DB
 	vscode.workspace.onDidSaveTextDocument(async (document) => {
         const codebase = document.getText();
         const fileName = document.fileName;
@@ -86,6 +158,7 @@ let uploadedFiles = [];
 		vscode.window.setStatusBarMessage('Codebase stored successfully!');
     });
 
+	//Register the command to open the chat window
     let openChatCommand = vscode.commands.registerCommand('code-assistant.codeBuddy', async function () {
         const panel = vscode.window.createWebviewPanel(
             'chatPanel',
@@ -94,26 +167,20 @@ let uploadedFiles = [];
             { enableScripts: true }
         );
 
+		//Load the webview content and send the initial message
         panel.webview.html = getWebviewContent();
 		panel.webview.postMessage({ command: 'startBotMessage', id: "first" , llmModel: ollama.model});
 		panel.webview.postMessage({ command: 'startBotText', id: "first", textId: "first" });
 		panel.webview.postMessage({ command: 'updateBotText', id: "first", textId: "first", text: "Hi there, ask me anything!"});
 
-		//Loop through every doc in firebase DOCS collection and add to uploaded docs array
-		try {
-			const querySnapshot = await getDocs(collection(firestoreDB, "DOCS"));
-			querySnapshot.forEach((doc) => {
-				uploadedFiles.push(doc.id);
-			});
-		} catch (error) {
-			console.error("Error fetching documents from Firestore:", error);
-		}
-
+		//Get the list of uploaded files and display in the webview
+		uploadedFiles = await getFileNamesFromDocs();
 		panel.webview.postMessage({
 			command: 'updateFileList',
 			files: uploadedFiles
 		});
 
+		//Get the list of installed models and display in the webview
 		exec('ollama list', (err, stdout, stderr) => {
 			if (err) {
 				console.error(`Error listing ollama models: ${err}`);
@@ -143,6 +210,8 @@ let uploadedFiles = [];
 			}
 	
 		});
+
+		//Handle messages from the webview and redirect to appropriate functions
         panel.webview.onDidReceiveMessage(async message => {
             if (message.command === 'sendInput') {
 				if(!installedModels.includes(ollama.model)) {
@@ -150,68 +219,7 @@ let uploadedFiles = [];
 					panel.webview.postMessage({ command: 'stopStream' });
 					return;
 				}
-				let userInput = message.text;
-
-				const embeddedInput = await embeddings.embedQuery(userInput);
-				try {
-					const docResponse = await index.namespace('docs').query({
-						vector: embeddedInput,
-						topK: 1
-					});
-	
-					const codeResponse = await index.namespace('code').query({
-						vector: embeddedInput,
-						topK: 1
-					});
-	
-					let docMatches = docResponse.matches;
-					let codeMatches = codeResponse.matches;
-
-					if(docMatches[0]) {
-						let docID = docMatches[0].id;
-						let docScore = docMatches[0].score;
-						console.log(docID);
-						console.log(docScore);
-						if(docScore > 0.3) {
-							const docRef = doc(firestoreDB, "DOCS", docID);
-							const docSnap = await getDoc(docRef);
-	
-							if (docSnap.exists()) {
-								//userInput = userInput + ". Here are some files that might provide context. It may or may not be pertinent to the query but keep it in mind: "
-								//+ docSnap.data().text;
-								userInput = "Context: " + docSnap.data().text + ". Query: " + userInput;
-							} 
-						}
-					}
-	
-					if(codeMatches[0]) {
-						let codeID = codeMatches[0].id;
-						let codeScore = codeMatches[0].score;
-						console.log(codeID);
-						console.log(codeScore);
-	
-						if(codeScore > 0.2) {
-							const codeRef = doc(firestoreDB, "CODE", codeID);
-							const codeSnap = await getDoc(codeRef);
-	
-							if (codeSnap.exists()) {
-								//userInput = userInput + ". Here are some files that might provide context. It may or may not be pertinent to the query but keep it in mind: "
-								//+ docSnap.data().text;
-								userInput += ". Relevant Code: " + codeSnap.data().text;
-							}
-						} 
-					}
-				} catch(exception) {
-					console.log(exception);
-				}
-
-				console.log(userInput);
-
-				if (selectedText) {
-					userInput = userInput + ". Here is the highlighted code: " + selectedText;
-				}
-
-                await handleUserInput(panel, userInput);
+                await handleUserInput(panel, message.text);
             } else if (message.command === 'stopStream') {
                 await stopStream(panel);
             } else if (message.command === 'uploadFile') {
@@ -226,8 +234,6 @@ let uploadedFiles = [];
 				removeModel(panel, message.model);
 			}
         });
-
-        context.subscriptions.push(openChatCommand);
     });
 
     context.subscriptions.push(openChatCommand);
@@ -237,60 +243,61 @@ let uploadedFiles = [];
 
 }
 
+/****************************************************************************
+ * Handling User Input and LLM Output
+ ****************************************************************************/
 
-class MyInlineCompletionItemProvider {
-	constructor() {
-        // Initialize a timer variable
-        this.timer = null;
-		this.latestPrompt = ''
-		this.latestCompletion = '';
-    }
-
-    async provideInlineCompletionItems(document, position, context, token) {
-		clearTimeout(this.timer);
-
-		return new Promise((resolve) => {
-            // Set a new timer for 2 seconds
-            this.timer = setTimeout(async () => {
-                try {
-					vscode.window.setStatusBarMessage('Autocompleting...');
-                    const startText = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
-					const endText = document.getText(new vscode.Range(position, new vscode.Position(document.lineCount, 0)));
-					const language = document.languageId;
-					if(startText === this.latestPrompt) {
-						let completionItem = new vscode.InlineCompletionItem(this.latestCompletion);
-						completionItem.range = new vscode.Range(position, position);
-						resolve(new vscode.InlineCompletionList([completionItem]));
-					} else {
-						this.latestPrompt = startText;
-						let completionText = '';
-						const stream = await ollama.stream("Complete the code. Language is " + language + ". Just code, no other text. " + 
-						"Do not add triple quotes or the coding language. If I've already started part of a line, don't write what I already have." +
-						"Here is code before the cursor: \n" + startText + "\n Here is the code after: \n" + endText);
-						
-						for await (const chunk of stream) {
-							completionText += chunk;
-						}
-						this.latestCompletion = completionText;
-
-						let completionItem = new vscode.InlineCompletionItem(completionText);
-						completionItem.range = new vscode.Range(position, position);
-
-						// Resolve the promise with the completion item
-						vscode.window.setStatusBarMessage('');
-						resolve(new vscode.InlineCompletionList([completionItem]));
-					}
-                } catch (error) {
-                    console.error("Error fetching completion:", error);
-                    // Resolve with an empty completion list in case of an error
-                    resolve(new vscode.InlineCompletionList([]));
-                }
-            }, 2000); // 2000 milliseconds = 2 seconds
-        });
-    }
-}
-
+//Handle user input and get LLM output
 async function handleUserInput(panel, userInput) {
+	//Convert the user input to vector
+	const embeddedInput = await embeddings.embedQuery(userInput);
+	try {
+
+		//Query the vector DB for the most similar document and code
+		const docResponse = await index.namespace('docs').query({
+			vector: embeddedInput,
+			topK: 1
+		});
+		const codeResponse = await index.namespace('code').query({
+			vector: embeddedInput,
+			topK: 1
+		});
+
+		let docMatches = docResponse.matches;
+		let codeMatches = codeResponse.matches;
+
+		//If the similarity score is above a certain threshold, add the document and code to the user input
+		if(docMatches[0]) {
+			let docID = docMatches[0].id;
+			let docScore = docMatches[0].score;
+			console.log(docID);
+			console.log(docScore);
+			if(docScore > 0.3) {
+				let text = await getDocumentByFileName(docID);
+				userInput = "Context: " + text + ". Query: " + userInput;
+			}
+		}
+		if(codeMatches[0]) {
+			let codeID = codeMatches[0].id;
+			let codeScore = codeMatches[0].score;
+			console.log(codeID);
+			console.log(codeScore);
+
+			if(codeScore > 0.2) {
+				let code = await getCodeByFileName(codeID);
+				userInput += ". Relevant Code: " + code;
+			} 
+		}
+	} catch(exception) {
+		console.log(exception);
+	}
+
+	console.log(userInput);
+
+	if (selectedText) {
+		userInput = userInput + ". Here is the highlighted code: " + selectedText;
+	}
+
 	let codeMode = false;
 	let codeId = null;
 	let textId = "textId-" + Date.now();
@@ -322,8 +329,6 @@ async function handleUserInput(panel, userInput) {
 			codeMode = !codeMode;
 			if (codeMode) {
 				languageNext = true;
-				// codeId = "codeId-" + Date.now();
-				// panel.webview.postMessage({ command: 'startBotCode', id: messageId, codeId: codeId });
 			} else {
 				textId = "textId-" + Date.now();
 				panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
@@ -348,28 +353,7 @@ async function handleUserInput(panel, userInput) {
 	panel.webview.postMessage({ command: 'stopStream' });
 }
 
-async function storeCodebase(codebase, fileName) {
-	fileName = fileName.split('/').pop();
-	console.log(fileName);
-
-    const codeEmbed = await embeddings.embedQuery(codebase);
-	await index.namespace('code').upsert([
-		{
-			id: fileName,
-			values: codeEmbed
-		}
-	]);
-
-	const chunkData = {
-		text: codebase
-	};
-
-	const document = doc(firestoreDB, "CODE", fileName);
-	await setDoc(document, chunkData);
-
-    console.log("Codebase stored successfully.");
-}
-
+//Stop LLM output stream
 async function stopStream(panel) {
     if (currentStream && currentStream.return) {
         abortController.abort();
@@ -377,6 +361,10 @@ async function stopStream(panel) {
     }
 	panel.webview.postMessage({ command: 'stopStream' });
 }
+
+/****************************************************************************
+ * Uploading and Removing Files/Codebase
+ ****************************************************************************/
 
 async function handleFileUpload(panel, file, fileName) {
     const fileContent = Buffer.from(file, 'base64');
@@ -393,8 +381,6 @@ async function handleFileUpload(panel, file, fileName) {
         command: 'updateProgress',
         percent: '20%'
     });
-
-
 	const documentEmbeddings = await embeddings.embedQuery(uploadedFileText)
 
 	panel.webview.postMessage({
@@ -408,8 +394,6 @@ async function handleFileUpload(panel, file, fileName) {
 		  values: documentEmbeddings
 		}
 	])
-
-
 	const fileData = {
 		text: uploadedFileText,
 	};
@@ -419,13 +403,9 @@ async function handleFileUpload(panel, file, fileName) {
         percent: '70%'
     });
 
-	try {
-		const document = doc(firestoreDB, "DOCS", fileName);
-        let dataUpdated = await setDoc(document, fileData);
-        console.log("Document written successfully to Firestore.");
-    } catch (error) {
-        console.error("Error writing document to Firestore:", error);
-    }
+	console.log(uploadedFileText);
+	upsertDocument(fileName, uploadedFileText);
+
 
 	panel.webview.postMessage({
         command: 'updateProgress',
@@ -454,15 +434,31 @@ async function removeFileFromDB(panel, ind) {
 
 	await index.namespace('docs').deleteOne(file);
 
-	try {
-        const docRef = doc(firestoreDB, "DOCS", file);
-        await deleteDoc(docRef);
-        console.log("Document successfully deleted from Firestore.");
-    } catch (error) {
-        console.error("Error deleting document:", error);
-    }
-
+	deleteDocument(file);
 }
+
+async function storeCodebase(codebase, fileName) {
+	fileName = fileName.split('/').pop();
+	console.log(fileName);
+
+    const codeEmbed = await embeddings.embedQuery(codebase);
+	await index.namespace('code').upsert([
+		{
+			id: fileName,
+			values: codeEmbed
+		}
+	]);
+
+	upsertCodebase(fileName, codebase);
+
+    console.log("Codebase stored successfully.");
+}
+
+
+/****************************************************************************
+ * LLM Model Management
+ ****************************************************************************/
+
 
 async function changeModel(panel, selectedModel) {
     if (selectedModel == "GPT") {
@@ -555,6 +551,117 @@ function removeModel(panel, selectedModel) {
 	});
 }
 
+/****************************************************************************
+ * Postgres DB Helper Functions
+ ****************************************************************************/
+
+// Function to insert or update document
+async function upsertDocument(fileName, text) {
+	try {
+	  const query = `
+		INSERT INTO docs (file_name, text)
+		VALUES ($1, $2)
+		ON CONFLICT (file_name)
+		DO UPDATE SET text = EXCLUDED.text;
+	  `;
+	  const values = [fileName, text];
+	  await client.query(query, values);
+	  console.log('Document inserted/updated successfully');
+	} catch (err) {
+	  console.error('Error inserting/updating document', err);
+	} 
+  }
+
+  // Function to insert or update document
+  async function upsertCodebase(fileName, code) {
+	try {
+	  const query = `
+		INSERT INTO codebase (file_name, code)
+		VALUES ($1, $2)
+		ON CONFLICT (file_name)
+		DO UPDATE SET code = EXCLUDED.code;
+	  `;
+	  const values = [fileName, code];
+	  await client.query(query, values);
+	  console.log('Document inserted/updated successfully');
+	} catch (err) {
+	  console.error('Error inserting/updating document', err);
+	} 
+  }
+
+  async function getCodeByFileName(fileName) {
+    try {
+        const query = `
+            SELECT code FROM codebase
+            WHERE file_name = $1
+        `;
+        const values = [fileName];
+        const result = await client.query(query, values);
+        if (result.rows.length > 0) {
+            // Return the first row (assuming filename is unique)
+            return result.rows[0].code;
+        } else {
+            console.log(`Document with filename '${fileName}' not found`);
+            return null;
+        }
+    } catch (error) {
+        console.error("Error fetching document by filename:", error);
+        return null; // Return null if an error occurs
+    }
+}
+
+async function deleteDocument(fileName) {
+    try {
+        const query = `
+            DELETE FROM docs
+            WHERE file_name = $1
+        `;
+        const values = [fileName];
+        await client.query(query, values);
+        console.log('Document deleted successfully');
+    } catch (err) {
+        console.error('Error deleting document', err);
+    }
+}
+
+async function getFileNamesFromDocs() {
+    try {
+        const query = `
+            SELECT file_name FROM docs
+        `;
+        const result = await client.query(query);
+        const fileNames = result.rows.map(row => row.file_name);
+        return fileNames;
+    } catch (error) {
+        console.error("Error fetching file names from docs:", error);
+        return []; // Return an empty array if an error occurs
+    }
+}
+
+async function getDocumentByFileName(fileName) {
+    try {
+        const query = `
+            SELECT text FROM docs
+            WHERE file_name = $1
+        `;
+        const values = [fileName];
+        const result = await client.query(query, values);
+        if (result.rows.length > 0) {
+            // Return the first row (assuming filename is unique)
+            return result.rows[0].text;
+        } else {
+            console.log(`Document with filename '${fileName}' not found`);
+            return null;
+        }
+    } catch (error) {
+        console.error("Error fetching document by filename:", error);
+        return null; // Return null if an error occurs
+    }
+}
+
+/****************************************************************************
+ * User Interface
+ ****************************************************************************/
 
 function getWebviewContent() {
 	return `<!DOCTYPE html>
