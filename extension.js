@@ -48,7 +48,7 @@ const client = new Client({
 	host: 'localhost',
 	port: 5433, // Default port for PostgreSQL
 	user: 'postgres', // Replace with your PostgreSQL username
-	password: 'gutumuni', // Replace with your PostgreSQL password
+	password: 'testing', // Replace with your PostgreSQL password
 	database: 'postgres' // Replace with your PostgreSQL database name
   });
 
@@ -388,40 +388,41 @@ async function handleFileUpload(panel, file, fileName) {
         percent: '40%'
     });
 
-    await index.namespace('docs').upsert([
-		{
-		  id: fileName,
-		  values: documentEmbeddings
-		}
-	])
-	const fileData = {
-		text: uploadedFileText,
-	};
-
-	panel.webview.postMessage({
-        command: 'updateProgress',
-        percent: '70%'
-    });
-
-	console.log(uploadedFileText);
-	upsertDocument(fileName, uploadedFileText);
-
-
-	panel.webview.postMessage({
-        command: 'updateProgress',
-        percent: '100%'
-    });
-
-	uploadedFiles.push(fileName); // Add the filename to the array
-    panel.webview.postMessage({
-        command: 'updateFileList',
-        files: uploadedFiles
-    });
-
-	panel.webview.postMessage({
-        command: 'updateProgress',
-        percent: '0%'
-    });
+	try {
+		await index.namespace('docs').upsert([
+			{
+			  id: fileName,
+			  values: documentEmbeddings
+			}
+		])
+	} catch(exception) {
+		console.log(exception);
+	} finally {
+		panel.webview.postMessage({
+			command: 'updateProgress',
+			percent: '70%'
+		});
+	
+		console.log(uploadedFileText);
+		upsertDocument(fileName, uploadedFileText);
+	
+	
+		panel.webview.postMessage({
+			command: 'updateProgress',
+			percent: '100%'
+		});
+	
+		uploadedFiles.push(fileName); // Add the filename to the array
+		panel.webview.postMessage({
+			command: 'updateFileList',
+			files: uploadedFiles
+		});
+	
+		panel.webview.postMessage({
+			command: 'updateProgress',
+			percent: '0%'
+		});
+	}
 }
 
 async function removeFileFromDB(panel, ind) {
@@ -432,9 +433,14 @@ async function removeFileFromDB(panel, ind) {
 		files: uploadedFiles
 	});
 
-	await index.namespace('docs').deleteOne(file);
-
-	deleteDocument(file);
+	try {
+		await index.namespace('docs').deleteOne(file);
+	} catch(exception) {
+		console.log(exception);
+	} finally {
+		deleteDocument(file);
+	}
+	
 }
 
 async function storeCodebase(codebase, fileName) {
@@ -442,16 +448,22 @@ async function storeCodebase(codebase, fileName) {
 	console.log(fileName);
 
     const codeEmbed = await embeddings.embedQuery(codebase);
-	await index.namespace('code').upsert([
-		{
-			id: fileName,
-			values: codeEmbed
-		}
-	]);
 
-	upsertCodebase(fileName, codebase);
+	try {
+		await index.namespace('code').upsert([
+			{
+				id: fileName,
+				values: codeEmbed
+			}
+		]);
+	} catch(exception) {
+		console.log(exception);
+	} finally {
+		upsertCodebase(fileName, codebase);
 
-    console.log("Codebase stored successfully.");
+		console.log("Codebase stored successfully.");
+	}
+
 }
 
 
