@@ -8,7 +8,8 @@ const { OpenAI } = require("openai");
 const AbortController = require('abort-controller');
 const { Pinecone } = require('@pinecone-database/pinecone');
 const { OllamaEmbeddings } = require('@langchain/community/embeddings/ollama');
-const { Client } = require('pg');
+const { Client } = require('pg');	
+const {RecursiveCharacterTextSplitter} = require('langchain/text_splitter')
 
 //Declare global variables
 let installedModels = [];
@@ -256,38 +257,43 @@ async function handleUserInput(panel, userInput) {
 		//Query the vector DB for the most similar document and code
 		const docResponse = await index.namespace('docs').query({
 			vector: embeddedInput,
-			topK: 1
+			topK: 8
 		});
 		const codeResponse = await index.namespace('code').query({
 			vector: embeddedInput,
-			topK: 1
+			topK: 4
 		});
 
 		let docMatches = docResponse.matches;
 		let codeMatches = codeResponse.matches;
 
-		//If the similarity score is above a certain threshold, add the document and code to the user input
-		if(docMatches[0]) {
-			let docID = docMatches[0].id;
-			let docScore = docMatches[0].score;
-			console.log(docID);
-			console.log(docScore);
-			if(docScore > 0.3) {
-				let text = await getDocumentByFileName(docID);
-				userInput = "Context: " + text + ". Query: " + userInput;
+		let contextText = "";
+
+		for(let i = 0; i < docMatches.length; i++) {
+			//If the similarity score is above a certain threshold, add the document and code to the user input
+			if(docMatches[i]) {
+				let docID = docMatches[i].id;
+				let docScore = docMatches[i].score;
+				console.log(docID);
+				console.log(docScore);
+				if(docScore > 0.2) {
+					let text = await getDocumentByFileName(docID);
+					contextText += docID + ": " + text;
+				}
 			}
 		}
-		if(codeMatches[0]) {
-			let codeID = codeMatches[0].id;
-			let codeScore = codeMatches[0].score;
-			console.log(codeID);
-			console.log(codeScore);
+		userInput = "Context: " + contextText + ". Query: " + userInput;
+		// if(codeMatches[0]) {
+		// 	let codeID = codeMatches[0].id;
+		// 	let codeScore = codeMatches[0].score;
+		// 	console.log(codeID);
+		// 	console.log(codeScore);
 
-			if(codeScore > 0.2) {
-				let code = await getCodeByFileName(codeID);
-				userInput += ". Relevant Code: " + code;
-			} 
-		}
+		// 	if(codeScore > 0.2) {
+		// 		let code = await getCodeByFileName(codeID);
+		// 		userInput += ". Relevant Code: " + code;
+		// 	} 
+		// }
 	} catch(exception) {
 		console.log(exception);
 	}
@@ -381,48 +387,58 @@ async function handleFileUpload(panel, file, fileName) {
         command: 'updateProgress',
         percent: '20%'
     });
-	const documentEmbeddings = await embeddings.embedQuery(uploadedFileText)
 
+	const textSplitter = new RecursiveCharacterTextSplitter({
+		chunkSize: 500,
+		chunkOverlap: 100,
+	});
+
+	const chunks = await textSplitter.splitText(uploadedFileText);
+
+	let progressIncrement = 80 / chunks.length;
+	let currentPercent = 20;
+
+	let id = 0;
+	const promises = chunks.map(async (chunk) => {
+		const cleanChunk = chunk.replace(/\n/g, " ");
+		const documentEmbeddings = await embeddings.embedQuery(cleanChunk);
+
+		let fileID = fileName + "-" + id;
+		id += 1;
+
+		try {
+			await index.namespace('docs').upsert([
+				{
+				  id: fileID,
+				  values: documentEmbeddings,
+				  metadata: {'fileName': fileName}
+				}
+			])
+		} catch(exception) {
+			console.log(exception);
+		}
+		upsertDocument(fileID, cleanChunk);
+
+		panel.webview.postMessage({
+			command: 'updateProgress',
+			percent: currentPercent + '%'
+		});
+		currentPercent += progressIncrement;
+
+	});
+
+	await Promise.all(promises);
+
+	uploadedFiles.push(fileName); // Add the filename to the array
+	panel.webview.postMessage({
+		command: 'updateFileList',
+		files: uploadedFiles
+	});
+	
 	panel.webview.postMessage({
         command: 'updateProgress',
-        percent: '40%'
+        percent: '100%'
     });
-
-	try {
-		await index.namespace('docs').upsert([
-			{
-			  id: fileName,
-			  values: documentEmbeddings
-			}
-		])
-	} catch(exception) {
-		console.log(exception);
-	} finally {
-		panel.webview.postMessage({
-			command: 'updateProgress',
-			percent: '70%'
-		});
-	
-		console.log(uploadedFileText);
-		upsertDocument(fileName, uploadedFileText);
-	
-	
-		panel.webview.postMessage({
-			command: 'updateProgress',
-			percent: '100%'
-		});
-	
-		uploadedFiles.push(fileName); // Add the filename to the array
-		panel.webview.postMessage({
-			command: 'updateFileList',
-			files: uploadedFiles
-		});
-	
-		panel.webview.postMessage({
-			command: 'updateProgress',
-			percent: '0%'
-		});
-	}
 }
 
 async function removeFileFromDB(panel, ind) {
@@ -434,7 +450,14 @@ async function removeFileFromDB(panel, ind) {
 	});
 
 	try {
-		await index.namespace('docs').deleteOne(file);
+		//await index.namespace('docs').deleteOne(file);
+		console.log(file);
+        const pageOneList = await index.namespace('docs').listPaginated({ prefix: file});
+		console.log(pageOneList);
+		const pageOneVectorIds = pageOneList.vectors.map((vector) => vector.id);
+		console.log(pageOneVectorIds);
+
+		await index.namespace('docs').deleteMany(pageOneVectorIds);
 	} catch(exception) {
 		console.log(exception);
 	} finally {
@@ -626,20 +649,21 @@ async function deleteDocument(fileName) {
     try {
         const query = `
             DELETE FROM docs
-            WHERE file_name = $1
+            WHERE file_name LIKE $1
         `;
-        const values = [fileName];
+        const values = [`${fileName}-%`]; // Match any file_name starting with `fileName` followed by a hyphen and digits
         await client.query(query, values);
-        console.log('Document deleted successfully');
+        console.log('Documents deleted successfully');
     } catch (err) {
-        console.error('Error deleting document', err);
+        console.error('Error deleting documents', err);
     }
 }
 
 async function getFileNamesFromDocs() {
     try {
         const query = `
-            SELECT file_name FROM docs
+            SELECT DISTINCT regexp_replace(file_name, '-\\d+$', '') AS file_name
+            FROM docs
         `;
         const result = await client.query(query);
         const fileNames = result.rows.map(row => row.file_name);
