@@ -86,9 +86,10 @@ class MyInlineCompletionItemProvider {
 					} else {
 						this.latestPrompt = startText;
 						let completionText = '';
-						const stream = await ollama.stream("Complete the code. Language is " + language + ". Just code, no other text. " + 
+						abortController = new AbortController();
+						let stream = await ollama.stream("Complete the code. Language is " + language + ". Just code, no other text. " + 
 						"Do not add triple quotes or the coding language. If I've already started part of a line, don't write what I already have." +
-						"Here is code before the cursor: \n" + startText + "\n Here is the code after: \n" + endText);
+						"Here is code before the cursor: \n" + startText + "\n Here is the code after: \n" + endText, { signal: abortController.signal });
 						
 						for await (const chunk of stream) {
 							completionText += chunk;
@@ -250,6 +251,7 @@ class MyInlineCompletionItemProvider {
 
 //Handle user input and get LLM output
 async function handleUserInput(panel, userInput) {
+	abortController.abort();
 	//Convert the user input to vector
 	const embeddedInput = await embeddings.embedQuery(userInput);
 	let finalQuery = "";
@@ -1347,6 +1349,8 @@ function getWebviewContent() {
 	</body>
 	</html>`;
 }
+
+
 
 function deactivate() {}
 
