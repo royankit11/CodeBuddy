@@ -254,12 +254,11 @@ async function handleUserInput(panel, userInput) {
 	abortController.abort();
 	//Convert the user input to vector
 	const embeddedInput = await embeddings.embedQuery(userInput);
-	let finalQuery = "";
-	if (selectedText) {
-		finalQuery = userInput + ". Here is the highlighted code: " + selectedText;
-	} else {
-		try {
-
+	let finalQuery = userInput;
+	try {
+		if (selectedText) {
+			finalQuery = userInput + ". Here is the highlighted code: " + selectedText;
+		} else {
 			//Query the vector DB for the most similar document and code
 			const docResponse = await index.namespace('docs').query({
 				vector: embeddedInput,
@@ -314,66 +313,66 @@ async function handleUserInput(panel, userInput) {
 				+ relevantCode;
 			}
 			finalQuery += ". User Query: " + userInput;
-	
-		} catch(exception) {
-			console.log(exception);
 		}
-	}
-	console.log(finalQuery);
+	} catch(exception) {
+		console.log(exception);
+	} finally {
+		console.log(finalQuery);
 
-	let codeMode = false;
-	let codeId = null;
-	let textId = "textId-" + Date.now();
-	const messageId = Date.now(); // Unique identifier for the message
+		let codeMode = false;
+		let codeId = null;
+		let textId = "textId-" + Date.now();
+		const messageId = Date.now(); // Unique identifier for the message
 
-	panel.webview.postMessage({ command: 'startBotMessage', id: messageId , llmModel: ollama.model});
-	panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
+		panel.webview.postMessage({ command: 'startBotMessage', id: messageId , llmModel: ollama.model});
+		panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
 
-    abortController = new AbortController();
-	if(isGPT) {
-		currentStream = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
-            messages: [{ "role": "user", content: finalQuery }],
-            stream: true,
-        });
-	} else {
-		currentStream = await ollama.stream(finalQuery, { signal: abortController.signal });
-	}
-
-	let language = 'javascript'; // default language
-	let languageNext = false; 
-
-	for await (const chunk of currentStream) {
+		abortController = new AbortController();
 		if(isGPT) {
-			chunk = chunk.choices[0].delta
-		}
-		
-		if (chunk.includes("```")) {
-			codeMode = !codeMode;
-			if (codeMode) {
-				languageNext = true;
-			} else {
-				textId = "textId-" + Date.now();
-				panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
-			}
-			continue;
-		}
-		if (languageNext) {
-			language = chunk;
-			console.log(language);
-			languageNext = false; // reset the flag
-			codeId = "codeId-" + Date.now();
-			panel.webview.postMessage({ command: 'startBotCode', id: messageId, codeId: codeId, language: language });
-			continue;
+			currentStream = await openai.chat.completions.create({
+				model: "gpt-3.5-turbo",
+				messages: [{ "role": "user", content: finalQuery }],
+				stream: true,
+			});
+		} else {
+			currentStream = await ollama.stream(finalQuery, { signal: abortController.signal });
 		}
 
-		if (codeMode) {
-			panel.webview.postMessage({ command: 'updateBotCode', id: messageId, codeId: codeId, code: chunk });
-		} else {
-			panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: chunk });
+		let language = 'javascript'; // default language
+		let languageNext = false; 
+
+		for await (const chunk of currentStream) {
+			if(isGPT) {
+				chunk = chunk.choices[0].delta
+			}
+			
+			if (chunk.includes("```")) {
+				codeMode = !codeMode;
+				if (codeMode) {
+					languageNext = true;
+				} else {
+					textId = "textId-" + Date.now();
+					panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
+				}
+				continue;
+			}
+			if (languageNext) {
+				language = chunk;
+				console.log(language);
+				languageNext = false; // reset the flag
+				codeId = "codeId-" + Date.now();
+				panel.webview.postMessage({ command: 'startBotCode', id: messageId, codeId: codeId, language: language });
+				continue;
+			}
+
+			if (codeMode) {
+				panel.webview.postMessage({ command: 'updateBotCode', id: messageId, codeId: codeId, code: chunk });
+			} else {
+				panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: chunk });
+			}
 		}
+		panel.webview.postMessage({ command: 'stopStream' });
 	}
-	panel.webview.postMessage({ command: 'stopStream' });
 }
 
 //Stop LLM output stream
