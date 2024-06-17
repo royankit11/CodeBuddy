@@ -252,57 +252,72 @@ class MyInlineCompletionItemProvider {
 async function handleUserInput(panel, userInput) {
 	//Convert the user input to vector
 	const embeddedInput = await embeddings.embedQuery(userInput);
-	try {
+	let finalQuery = "";
+	if (selectedText) {
+		finalQuery = userInput + ". Here is the highlighted code: " + selectedText;
+	} else {
+		try {
 
-		//Query the vector DB for the most similar document and code
-		const docResponse = await index.namespace('docs').query({
-			vector: embeddedInput,
-			topK: 8
-		});
-		const codeResponse = await index.namespace('code').query({
-			vector: embeddedInput,
-			topK: 4
-		});
-
-		let docMatches = docResponse.matches;
-		let codeMatches = codeResponse.matches;
-
-		let contextText = "";
-
-		for(let i = 0; i < docMatches.length; i++) {
-			//If the similarity score is above a certain threshold, add the document and code to the user input
-			if(docMatches[i]) {
-				let docID = docMatches[i].id;
-				let docScore = docMatches[i].score;
-				console.log(docID);
-				console.log(docScore);
-				if(docScore > 0.2) {
-					let text = await getDocumentByFileName(docID);
-					contextText += docID + ": " + text;
+			//Query the vector DB for the most similar document and code
+			const docResponse = await index.namespace('docs').query({
+				vector: embeddedInput,
+				topK: 8
+			});
+			const codeResponse = await index.namespace('code').query({
+				vector: embeddedInput,
+				topK: 4
+			});
+	
+			let docMatches = docResponse.matches;
+			let codeMatches = codeResponse.matches;
+	
+			let contextText = "";
+	
+			for(let i = 0; i < docMatches.length; i++) {
+				//If the similarity score is above a certain threshold, add the document and code to the user input
+				if(docMatches[i]) {
+					let docID = docMatches[i].id;
+					let docScore = docMatches[i].score;
+					console.log(docID);
+					console.log(docScore);
+					if(docScore > 0.3) {
+						let text = await getDocumentByFileName(docID);
+						contextText += docID + ": " + text;
+					}
 				}
 			}
+			if(contextText.trim() !== "") {
+				finalQuery = "Context [This information may or may not be relevant to the query]: " 
+				+ contextText;
+			}
+	
+			let relevantCode = "";
+			
+			for(let i = 0; i < codeMatches.length; i++) {
+				//If the similarity score is above a certain threshold, add the document and code to the user input
+				if(codeMatches[i]) {
+					let codeID = codeMatches[i].id;
+					let codeScore = codeMatches[i].score;
+					console.log(codeID);
+					console.log(codeScore);
+					if(codeScore > 0.25) {
+						let snippet = await getCodeByFileName(codeID);
+						relevantCode += codeID + ": " + snippet;
+					}
+				}
+			}
+	
+			if(relevantCode.trim() !== "") {
+				finalQuery += ". Codebase [This information may or may not be relevant to the query]: " 
+				+ relevantCode;
+			}
+			finalQuery += ". User Query: " + userInput;
+	
+		} catch(exception) {
+			console.log(exception);
 		}
-		userInput = "Context: " + contextText + ". Query: " + userInput;
-		// if(codeMatches[0]) {
-		// 	let codeID = codeMatches[0].id;
-		// 	let codeScore = codeMatches[0].score;
-		// 	console.log(codeID);
-		// 	console.log(codeScore);
-
-		// 	if(codeScore > 0.2) {
-		// 		let code = await getCodeByFileName(codeID);
-		// 		userInput += ". Relevant Code: " + code;
-		// 	} 
-		// }
-	} catch(exception) {
-		console.log(exception);
 	}
-
-	console.log(userInput);
-
-	if (selectedText) {
-		userInput = userInput + ". Here is the highlighted code: " + selectedText;
-	}
+	console.log(finalQuery);
 
 	let codeMode = false;
 	let codeId = null;
@@ -316,11 +331,11 @@ async function handleUserInput(panel, userInput) {
 	if(isGPT) {
 		currentStream = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
-            messages: [{ "role": "user", content: userInput }],
+            messages: [{ "role": "user", content: finalQuery }],
             stream: true,
         });
 	} else {
-		currentStream = await ollama.stream(userInput, { signal: abortController.signal });
+		currentStream = await ollama.stream(finalQuery, { signal: abortController.signal });
 	}
 
 	let language = 'javascript'; // default language
@@ -467,26 +482,35 @@ async function removeFileFromDB(panel, ind) {
 }
 
 async function storeCodebase(codebase, fileName) {
+	vscode.window.setStatusBarMessage('Saving...');
+
 	fileName = fileName.split('/').pop();
 	console.log(fileName);
 
-    const codeEmbed = await embeddings.embedQuery(codebase);
+	const lines = codebase.split('\n');
 
-	try {
-		await index.namespace('code').upsert([
-			{
-				id: fileName,
-				values: codeEmbed
-			}
-		]);
-	} catch(exception) {
-		console.log(exception);
-	} finally {
-		upsertCodebase(fileName, codebase);
+    for (let i = 0; i < lines.length; i += 10) {
+        const chunk = "Lines " + i + " to " + (i+10) + ": " + lines.slice(i, i + 10).join('\n');
+		const cleanChunk = chunk.replace(/\n/g, " ");
+		//console.log(cleanChunk);
+		const codeEmbed = await embeddings.embedQuery(cleanChunk);
 
-		console.log("Codebase stored successfully.");
-	}
+		let fileID = fileName + "-" + i;
+		try {
+			await index.namespace('code').upsert([
+				{
+					id: fileID,
+					values: codeEmbed
+				}
+			]);
+		} catch(exception) {
+			console.log(exception);
+		} finally {
+			upsertCodebase(fileID, cleanChunk);
 
+			console.log("Codebase stored successfully.");
+		}
+    }
 }
 
 
