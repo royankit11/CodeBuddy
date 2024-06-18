@@ -10,6 +10,7 @@ const { Pinecone } = require('@pinecone-database/pinecone');
 const { OllamaEmbeddings } = require('@langchain/community/embeddings/ollama');
 const { Client } = require('pg');	
 const {RecursiveCharacterTextSplitter} = require('langchain/text_splitter')
+const { ChromaClient } = require("chromadb");
 
 //Declare global variables
 let installedModels = [];
@@ -19,6 +20,9 @@ let activeEditor = null;
 let isGPT = false;
 let currentStream = null;
 let uploadedFiles = [];
+const chroma = new ChromaClient();
+let docsCollection;
+let codebaseCollection;
 
 //Instatiate Ollama model
 let ollama = new Ollama({
@@ -140,6 +144,8 @@ class MyInlineCompletionItemProvider {
         console.error(`ollama serve error output: ${stderr}`);
     });
 
+	
+
 	//Check if any text has been selected	
     vscode.window.onDidChangeTextEditorSelection(event => {
         const editor = event.textEditor;
@@ -168,6 +174,14 @@ class MyInlineCompletionItemProvider {
             vscode.ViewColumn.Beside,
             { enableScripts: true }
         );
+
+		docsCollection = await chroma.getOrCreateCollection({
+			name: "docs",
+		});
+
+		codebaseCollection = await chroma.getOrCreateCollection({
+			name: "codebase",
+		});
 
 		//Load the webview content and send the initial message
         panel.webview.html = getWebviewContent();
@@ -252,38 +266,39 @@ class MyInlineCompletionItemProvider {
 //Handle user input and get LLM output
 async function handleUserInput(panel, userInput) {
 	abortController.abort();
+	vscode.window.setStatusBarMessage('');
 	//Convert the user input to vector
 	const embeddedInput = await embeddings.embedQuery(userInput);
-	let finalQuery = userInput;
+	let finalQuery = "";
 	try {
 		if (selectedText) {
 			finalQuery = userInput + ". Here is the highlighted code: " + selectedText;
 		} else {
 			//Query the vector DB for the most similar document and code
-			const docResponse = await index.namespace('docs').query({
-				vector: embeddedInput,
-				topK: 8
+			const docResults = await docsCollection.query({
+				queryTexts: [userInput], // Chroma will embed this for you
+				nResults: 5, // how many results to return
 			});
-			const codeResponse = await index.namespace('code').query({
-				vector: embeddedInput,
-				topK: 4
+
+			const codeResults = await codebaseCollection.query({
+				queryTexts: [userInput], // Chroma will embed this for you
+				nResults: 5, // how many results to return
 			});
 	
-			let docMatches = docResponse.matches;
-			let codeMatches = codeResponse.matches;
-	
+			let docMatches = docResults.documents[0];
+
 			let contextText = "";
 	
 			for(let i = 0; i < docMatches.length; i++) {
 				//If the similarity score is above a certain threshold, add the document and code to the user input
 				if(docMatches[i]) {
-					let docID = docMatches[i].id;
-					let docScore = docMatches[i].score;
+					let docID = docResults.ids[0][i];
+					let docScore = docResults.distances[0][i];
 					console.log(docID);
 					console.log(docScore);
-					if(docScore > 0.3) {
-						let text = await getDocumentByFileName(docID);
-						contextText += docID + ": " + text;
+					if(docScore < 1.5) {
+						//let text = await getDocumentByFileName(docID);
+						contextText += docID + ": " + docMatches[i];
 					}
 				}
 			}
@@ -291,19 +306,20 @@ async function handleUserInput(panel, userInput) {
 				finalQuery = "Context [This information may or may not be relevant to the query]: " 
 				+ contextText;
 			}
-	
+
+			let codeMatches = codeResults.documents[0];
 			let relevantCode = "";
 			
 			for(let i = 0; i < codeMatches.length; i++) {
 				//If the similarity score is above a certain threshold, add the document and code to the user input
 				if(codeMatches[i]) {
-					let codeID = codeMatches[i].id;
-					let codeScore = codeMatches[i].score;
+					let codeID = codeResults.ids[0][i];
+					let codeScore = codeResults.distances[0][i];
 					console.log(codeID);
 					console.log(codeScore);
-					if(codeScore > 0.25) {
-						let snippet = await getCodeByFileName(codeID);
-						relevantCode += codeID + ": " + snippet;
+					if(codeScore < 1.5) {
+						//let snippet = await getCodeByFileName(codeID);
+						relevantCode += codeID + ": " + codeMatches[i];
 					}
 				}
 			}
@@ -312,12 +328,15 @@ async function handleUserInput(panel, userInput) {
 				finalQuery += ". Codebase [This information may or may not be relevant to the query]: " 
 				+ relevantCode;
 			}
-			finalQuery += ". User Query: " + userInput;
+			finalQuery += (finalQuery !== "") ? ".\n\n User Query: " + userInput :  "User Query: " + userInput;
 		}
 	} catch(exception) {
 		console.log(exception);
 	} finally {
 		console.log(finalQuery);
+		if(finalQuery === "") {
+			finalQuery = userInput;
+		}
 
 		let codeMode = false;
 		let codeId = null;
@@ -417,19 +436,19 @@ async function handleFileUpload(panel, file, fileName) {
 	let id = 0;
 	const promises = chunks.map(async (chunk) => {
 		const cleanChunk = chunk.replace(/\n/g, " ");
-		const documentEmbeddings = await embeddings.embedQuery(cleanChunk);
 
 		let fileID = fileName + "-" + id;
 		id += 1;
 
 		try {
-			await index.namespace('docs').upsert([
-				{
-				  id: fileID,
-				  values: documentEmbeddings,
-				  metadata: {'fileName': fileName}
-				}
-			])
+			await docsCollection.upsert({
+				documents: [
+					cleanChunk
+				],
+				ids: [fileID],
+				metadatas: [{fileName: fileName}]
+			});
+
 		} catch(exception) {
 			console.log(exception);
 		}
@@ -466,14 +485,10 @@ async function removeFileFromDB(panel, ind) {
 	});
 
 	try {
-		//await index.namespace('docs').deleteOne(file);
-		console.log(file);
-        const pageOneList = await index.namespace('docs').listPaginated({ prefix: file});
-		console.log(pageOneList);
-		const pageOneVectorIds = pageOneList.vectors.map((vector) => vector.id);
-		console.log(pageOneVectorIds);
-
-		await index.namespace('docs').deleteMany(pageOneVectorIds);
+		const docsToDelete = await docsCollection.delete({
+			where: {fileName: file},
+		  });
+		  console.log(docsToDelete);
 	} catch(exception) {
 		console.log(exception);
 	} finally {
@@ -494,16 +509,16 @@ async function storeCodebase(codebase, fileName) {
         const chunk = "Lines " + i + " to " + (i+10) + ": " + lines.slice(i, i + 10).join('\n');
 		const cleanChunk = chunk.replace(/\n/g, " ");
 		//console.log(cleanChunk);
-		const codeEmbed = await embeddings.embedQuery(cleanChunk);
 
 		let fileID = fileName + "-" + i;
 		try {
-			await index.namespace('code').upsert([
-				{
-					id: fileID,
-					values: codeEmbed
-				}
-			]);
+			await codebaseCollection.upsert({
+				documents: [
+					cleanChunk
+				],
+				ids: [fileID],
+				metadatas: [{fileName: fileName}]
+			});
 		} catch(exception) {
 			console.log(exception);
 		} finally {
