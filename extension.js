@@ -2,6 +2,7 @@
 
 const vscode = require('vscode');
 const { Ollama } = require("@langchain/community/llms/ollama");
+const debounce = require('lodash.debounce');
 const pdfParse = require('pdf-parse');
 const { exec , spawn } = require('child_process');
 const { OpenAI } = require("openai");
@@ -91,9 +92,15 @@ class MyInlineCompletionItemProvider {
 						this.latestPrompt = startText;
 						let completionText = '';
 						abortController = new AbortController();
-						let stream = await ollama.stream("Complete the code. Language is " + language + ". Just code, no other text. " + 
-						"Do not add triple quotes or the coding language. If I've already started part of a line, don't write what I already have." +
-						"Here is code before the cursor: \n" + startText + "\n Here is the code after: \n" + endText, { signal: abortController.signal });
+						const query = `Complete the following code snippet in ${language}. ` + 
+						`Only provide the code continuation, no additional explanations or comments.` +
+						`Do NOT repeat any part of the provided code snippet.` +
+						`Code before cursor:\n${startText}` + 
+						`Code after cursor:\n${endText}`;
+
+						console.log("Query:", query);
+
+						let stream = await ollama.stream(query, { signal: abortController.signal });
 						
 						for await (const chunk of stream) {
 							completionText += chunk;
@@ -118,6 +125,9 @@ class MyInlineCompletionItemProvider {
         });
     }
 }
+
+
+
 
 /****************************************************************************
  * Extension Activation
@@ -288,7 +298,7 @@ async function handleUserInput(panel, userInput) {
 			let docMatches = docResults.documents[0];
 
 			let contextText = "";
-	
+			let retrievedDocs = [];
 			for(let i = 0; i < docMatches.length; i++) {
 				//If the similarity score is above a certain threshold, add the document and code to the user input
 				if(docMatches[i]) {
@@ -296,9 +306,15 @@ async function handleUserInput(panel, userInput) {
 					let docScore = docResults.distances[0][i];
 					console.log(docID);
 					console.log(docScore);
+					let cleanedDocID = docID.replace(/-\d+$/, '');
+
 					if(docScore < 1.5) {
-						//let text = await getDocumentByFileName(docID);
-						contextText += docID + ": " + docMatches[i];
+						if(!retrievedDocs.includes(cleanedDocID)) {
+							retrievedDocs.push(cleanedDocID);
+							let text = await getDocumentByFileName(cleanedDocID);
+							contextText += cleanedDocID + ": " + text + "\n";
+						}
+						
 					}
 				}
 			}
@@ -309,7 +325,8 @@ async function handleUserInput(panel, userInput) {
 
 			let codeMatches = codeResults.documents[0];
 			let relevantCode = "";
-			
+			let retrievedCodeFiles = [];
+
 			for(let i = 0; i < codeMatches.length; i++) {
 				//If the similarity score is above a certain threshold, add the document and code to the user input
 				if(codeMatches[i]) {
@@ -317,9 +334,13 @@ async function handleUserInput(panel, userInput) {
 					let codeScore = codeResults.distances[0][i];
 					console.log(codeID);
 					console.log(codeScore);
+					let cleanedCodeID = codeID.replace(/-\d+$/, '');
 					if(codeScore < 1.5) {
-						//let snippet = await getCodeByFileName(codeID);
-						relevantCode += codeID + ": " + codeMatches[i];
+						if(!retrievedCodeFiles.includes(cleanedCodeID)) {
+							retrievedCodeFiles.push(cleanedCodeID);
+							let snippet = await getCodeByFileName(cleanedCodeID);
+							relevantCode += cleanedCodeID + ": " + snippet + "\n";
+						}
 					}
 				}
 			}
@@ -328,7 +349,7 @@ async function handleUserInput(panel, userInput) {
 				finalQuery += ". Codebase [This information may or may not be relevant to the query]: " 
 				+ relevantCode;
 			}
-			finalQuery += (finalQuery !== "") ? ".\n\n User Query: " + userInput :  "User Query: " + userInput;
+			finalQuery += (finalQuery !== "") ? ".\n\n User Query: " + userInput :  userInput;
 		}
 	} catch(exception) {
 		console.log(exception);
@@ -452,7 +473,6 @@ async function handleFileUpload(panel, file, fileName) {
 		} catch(exception) {
 			console.log(exception);
 		}
-		upsertDocument(fileID, cleanChunk);
 
 		panel.webview.postMessage({
 			command: 'updateProgress',
@@ -463,6 +483,8 @@ async function handleFileUpload(panel, file, fileName) {
 	});
 
 	await Promise.all(promises);
+
+	upsertDocument(fileName, uploadedFileText);
 
 	uploadedFiles.push(fileName); // Add the filename to the array
 	panel.webview.postMessage({
@@ -522,11 +544,10 @@ async function storeCodebase(codebase, fileName) {
 		} catch(exception) {
 			console.log(exception);
 		} finally {
-			upsertCodebase(fileID, cleanChunk);
-
 			console.log("Codebase stored successfully.");
 		}
     }
+	upsertCodebase(fileName, codebase);
 }
 
 
@@ -689,9 +710,9 @@ async function deleteDocument(fileName) {
     try {
         const query = `
             DELETE FROM docs
-            WHERE file_name LIKE $1
+            WHERE file_name = $1
         `;
-        const values = [`${fileName}-%`]; // Match any file_name starting with `fileName` followed by a hyphen and digits
+        const values = [fileName]; // Match any file_name starting with `fileName` followed by a hyphen and digits
         await client.query(query, values);
         console.log('Documents deleted successfully');
     } catch (err) {
@@ -998,6 +1019,7 @@ function getWebviewContent() {
 			<div id="installButtonContainer" style="margin-right: 10px;"></div>
 		 	<select id="modelSelect" onchange="changeModel()">
                 <option value="phi3">phi3</option>
+				<option value="granite-code">granite-code</option>
                 <option value="llama2">llama2</option>
                 <option value="codellama">codellama</option>
 				<option value="GPT">GPT</option>
