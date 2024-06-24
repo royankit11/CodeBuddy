@@ -15,6 +15,7 @@ const { ChromaClient } = require("chromadb");
 
 //Declare global variables
 let installedModels = [];
+let messageHistory = [];
 let selectedText = '';
 let uploadedFileText = '';
 let activeEditor = null;
@@ -28,15 +29,9 @@ let codebaseCollection;
 //Instatiate Ollama model
 let ollama = new Ollama({
     baseUrl: "http://localhost:11434", // Default value
-    model: "phi3", // Default value
+    model: "code-buddy", // Default value
 });
 
-//Instatiate Ollama embeddings model for vectorization
-const embeddings = new OllamaEmbeddings({
-	model: "phi3", // default value
-	baseUrl: "http://localhost:11434", // default value
-});
-  
 const openai = new OpenAI({
     apiKey: "sk-proj-M6ZLbZbpndRH2OSr87PKT3BlbkFJMAbUFWQUx1Wwe4vdZ1vy"
 });
@@ -92,11 +87,14 @@ class MyInlineCompletionItemProvider {
 						this.latestPrompt = startText;
 						let completionText = '';
 						abortController = new AbortController();
-						const query = `Complete the following code snippet in ${language}. ` + 
-						`Only provide the code continuation, no additional explanations or comments.` +
-						`Do NOT repeat any part of the provided code snippet.` +
-						`Code before cursor:\n${startText}` + 
-						`Code after cursor:\n${endText}`;
+						// const query = `Complete the following code snippet in ${language}. ` + 
+						// `Only provide the code continuation, no additional explanations or comments.` +
+						// `Do NOT repeat any part of the provided code snippet. ` +
+						// `Code before cursor:\n${startText}` + 
+						// `Code after cursor:\n${endText}`;
+
+						//const query = `Complete the code. Language is ${language}. Code before cursor: \n${startText}. Code after cursor: \n${endText}`
+						const query = `Complete the code. Language is ${language}: ${startText}`
 
 						console.log("Query:", query);
 
@@ -104,6 +102,7 @@ class MyInlineCompletionItemProvider {
 						
 						for await (const chunk of stream) {
 							completionText += chunk;
+							console.log(chunk);
 						}
 						this.latestCompletion = completionText;
 
@@ -278,7 +277,6 @@ async function handleUserInput(panel, userInput) {
 	abortController.abort();
 	vscode.window.setStatusBarMessage('');
 	//Convert the user input to vector
-	const embeddedInput = await embeddings.embedQuery(userInput);
 	let finalQuery = "";
 	try {
 		if (selectedText) {
@@ -381,7 +379,7 @@ async function handleUserInput(panel, userInput) {
 		let language = 'javascript'; // default language
 		let languageNext = false; 
 
-		for await (const chunk of currentStream) {
+		for await (let chunk of currentStream) {
 			if(isGPT) {
 				chunk = chunk.choices[0].delta
 			}
