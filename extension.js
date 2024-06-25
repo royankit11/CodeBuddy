@@ -12,6 +12,8 @@ const { OllamaEmbeddings } = require('@langchain/community/embeddings/ollama');
 const { Client } = require('pg');	
 const {RecursiveCharacterTextSplitter} = require('langchain/text_splitter')
 const { ChromaClient } = require("chromadb");
+const fs = require('fs').promises;
+const path = require('path');
 
 //Declare global variables
 let installedModels = [];
@@ -25,6 +27,10 @@ let uploadedFiles = [];
 const chroma = new ChromaClient();
 let docsCollection;
 let codebaseCollection;
+let messageHistoryCollection;
+
+let userQuery = '';
+let llmResponse = '';
 
 //Instatiate Ollama model
 let ollama = new Ollama({
@@ -36,12 +42,6 @@ const openai = new OpenAI({
     apiKey: "sk-proj-M6ZLbZbpndRH2OSr87PKT3BlbkFJMAbUFWQUx1Wwe4vdZ1vy"
 });
 let abortController = new AbortController();
-
-//Instatiate vector DB
-const pc = new Pinecone({
-	apiKey: '9894c035-5130-48f8-9579-c9101ba21180', // Replace with your Pinecone API key
-  });
-const index = pc.index("llm-extension")
 
 
 //Instatiate Postgres DB
@@ -192,6 +192,12 @@ class MyInlineCompletionItemProvider {
 			name: "codebase",
 		});
 
+		await chroma.deleteCollection({name: "messages"})
+
+		messageHistoryCollection = await chroma.getOrCreateCollection({
+			name: "messages",
+		});
+
 		//Load the webview content and send the initial message
         panel.webview.html = getWebviewContent();
 		panel.webview.postMessage({ command: 'startBotMessage', id: "first" , llmModel: ollama.model});
@@ -220,17 +226,17 @@ class MyInlineCompletionItemProvider {
 			installedModels = modelLines.map(line => line.split(/\s+/)[0].split(':')[0]);
 	
 			console.log(`Ollama models: ${installedModels}`);
-			if(installedModels.includes("phi3")) {
+			if(installedModels.includes("code-buddy")) {
 				panel.webview.postMessage({
 					command: 'showInstallButton',
 					visible: false,
-					model: "phi3"
+					model: "code-buddy"
 				});
 			} else {
 				panel.webview.postMessage({
 					command: 'showInstallButton',
 					visible: true,
-					model: "phi3"
+					model: "code-buddy"
 				});
 			}
 	
@@ -278,6 +284,7 @@ async function handleUserInput(panel, userInput) {
 	vscode.window.setStatusBarMessage('');
 	//Convert the user input to vector
 	let finalQuery = "";
+	userQuery = userInput;
 	try {
 		if (selectedText) {
 			finalQuery = userInput + ". Here is the highlighted code: " + selectedText;
@@ -292,11 +299,17 @@ async function handleUserInput(panel, userInput) {
 				queryTexts: [userInput], // Chroma will embed this for you
 				nResults: 5, // how many results to return
 			});
+
+			const messageResults = await messageHistoryCollection.query({
+				queryTexts: [userInput], // Chroma will embed this for you
+				nResults: 5, // how many results to return
+			});
+
 	
 			let docMatches = docResults.documents[0];
-
 			let contextText = "";
 			let retrievedDocs = [];
+
 			for(let i = 0; i < docMatches.length; i++) {
 				//If the similarity score is above a certain threshold, add the document and code to the user input
 				if(docMatches[i]) {
@@ -319,6 +332,27 @@ async function handleUserInput(panel, userInput) {
 			if(contextText.trim() !== "") {
 				finalQuery = "Context [This information may or may not be relevant to the query]: " 
 				+ contextText;
+			}
+
+			let messageMatches = messageResults.documents[0];
+			let messages = "";
+
+			for(let i = 0; i < messageMatches.length; i++) {
+				//If the similarity score is above a certain threshold, add the document and code to the user input
+				if(messageMatches[i]) {
+					let messageID = messageResults.ids[0][i];
+					let messageScore = messageResults.distances[0][i];
+					console.log(messageID);
+					console.log(messageScore);
+
+					if(messageScore < 1.5) {
+						messages += messageMatches[i] + "\n";	
+					}
+				}
+			}
+			if(messages.trim() !== "") {
+				finalQuery = "Past message history[This information may or may not be relevant to the query]: " 
+				+ messages;
 			}
 
 			let codeMatches = codeResults.documents[0];
@@ -383,6 +417,7 @@ async function handleUserInput(panel, userInput) {
 			if(isGPT) {
 				chunk = chunk.choices[0].delta
 			}
+			llmResponse += chunk;
 			
 			if (chunk.includes("```")) {
 				codeMode = !codeMode;
@@ -410,6 +445,7 @@ async function handleUserInput(panel, userInput) {
 			}
 		}
 		panel.webview.postMessage({ command: 'stopStream' });
+		storeMessage();
 	}
 }
 
@@ -420,10 +456,11 @@ async function stopStream(panel) {
         await currentStream.return();
     }
 	panel.webview.postMessage({ command: 'stopStream' });
+	storeMessage();
 }
 
 /****************************************************************************
- * Uploading and Removing Files/Codebase
+ * Interacting with Vector DB
  ****************************************************************************/
 
 async function handleFileUpload(panel, file, fileName) {
@@ -548,6 +585,24 @@ async function storeCodebase(codebase, fileName) {
 	upsertCodebase(fileName, codebase);
 }
 
+async function storeMessage() {
+
+	let message = "User: " + userQuery + "\n Assistant: " + llmResponse;
+
+	try {
+		await messageHistoryCollection.upsert({
+			documents: [
+				message
+			],
+			ids: ["message-" + Date.now()],
+		});
+	} catch(exception) {
+		console.log(exception);
+	} finally {
+		console.log("Messages stored successfully.");
+	}
+}
+
 
 /****************************************************************************
  * LLM Model Management
@@ -579,7 +634,11 @@ async function changeModel(panel, selectedModel) {
     console.log(`Switching to model: ${selectedModel}`);
 }
 
-function installModel(panel, selectedModel) {
+async function installModel(panel, selectedModel) {
+	if(selectedModel === 'code-buddy') {
+		installCodeBuddy(panel);
+		return;
+	}
 	const ollamaProcess = spawn('ollama', ['pull', selectedModel]);
 	let logTimer;
 	let showP = 0;
@@ -612,19 +671,106 @@ function installModel(panel, selectedModel) {
 		
     });
 
-    ollamaProcess.on('close', (code) => {
-        if (code !== 0) {
-            console.error(`Error pulling ollama model: ${code}`);
-            return;
-        }
-        console.log(`Ollama pull completed successfully.`);
-        installedModels.push(selectedModel);
+	return new Promise((resolve, reject) => {
+		ollamaProcess.on('close', (code) => {
+			if (code !== 0) {
+				console.error(`Error pulling ollama model: ${code}`);
+				return;
+			}
+			console.log(`Ollama pull completed successfully.`);
+			installedModels.push(selectedModel);
+			panel.webview.postMessage({
+				command: 'showInstallButton',
+				visible: false,
+				model: selectedModel
+			});
+		});
+		resolve();
+	});
+}
+
+function execPromise(command) {
+	return new Promise((resolve, reject) => {
+		exec(command, (error, stdout, stderr) => {
+			if (error) {
+				reject(error);
+				return;
+			}
+			if (stderr) {
+				console.error(`stderr: ${stderr}`);
+			}
+			resolve(stdout);
+		});
+	});
+}
+
+async function installCodeBuddy(panel) {
+	if(!installedModels.includes('phi3')) {
+		vscode.window.showInformationMessage("phi3 needs to be installed first.");
+		panel.webview.postMessage({
+			command: 'updateProgress',
+			percent: 100 + '%'
+		});
+		panel.webview.postMessage({
+			command: 'showInstallButton',
+			visible: true,
+			model: 'code-buddy'
+		});
+	} else {
+		const content = ` FROM phi3
+		TEMPLATE "{{ if .System }}<|system|>
+		{{ .System }}<|end|>
+		{{ end }}{{ if .Prompt }}<|user|>
+		{{ .Prompt }}<|end|>
+		{{ end }}<|assistant|>
+		{{ .Response }}<|end|>"
+		PARAMETER stop <|end|>
+		PARAMETER stop <|user|>
+		PARAMETER stop <|assistant|>
+
+		SYSTEM "You are a coding assistant named Buddy working for a company called Sutherland Global. 
+		You will assist users in completing, explaining, and debugging code. User's can upload files as context which you can use to guide
+		them in their development experience."
+		`;
+	
+		const filePath = path.join('/tmp', 'ModelfileCustomized');
+
+		console.log(`Writing to file: ${filePath}`);
+	
+		await fs.writeFile(filePath, content);
+
+		const fileContent = await fs.readFile(filePath, 'utf8');
+		console.log('File content:', fileContent);
+
+		const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
+		if (!fileExists) {
+			console.error(`File not found at path: ${filePath}`);
+			return;
+		}
+	
+	
+		// Run the terminal command
+		exec('ollama create code-buddy -f ' + filePath, (error, stdout, stderr) => {
+			if (error) {
+			return console.error(`Error executing command: ${error.message}`);
+			}
+			if (stderr) {
+			console.error(`stderr: ${stderr}`);
+			}
+		});
+		panel.webview.postMessage({
+			command: 'updateProgress',
+			percent: 100 + '%'
+		});
+	
+		installedModels.push('code-buddy');
 		panel.webview.postMessage({
 			command: 'showInstallButton',
 			visible: false,
-			model: selectedModel
+			model: 'code-buddy'
 		});
-    });
+	}
+
 }
 
 function removeModel(panel, selectedModel) {
@@ -1016,6 +1162,7 @@ function getWebviewContent() {
 		<div id="header">
 			<div id="installButtonContainer" style="margin-right: 10px;"></div>
 		 	<select id="modelSelect" onchange="changeModel()">
+				<option value="code-buddy">code-buddy</option>
                 <option value="phi3">phi3</option>
 				<option value="granite-code">granite-code</option>
                 <option value="llama2">llama2</option>
