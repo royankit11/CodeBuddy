@@ -1,5 +1,4 @@
 //Import all libraries
-
 const vscode = require('vscode');
 const { Ollama } = require("@langchain/community/llms/ollama");
 const debounce = require('lodash.debounce');
@@ -43,6 +42,8 @@ let ollama = new Ollama({
 const openai = new OpenAI({
     apiKey: "sk-proj-M6ZLbZbpndRH2OSr87PKT3BlbkFJMAbUFWQUx1Wwe4vdZ1vy"
 });
+
+//Create abort controller, used to stop LLMs from generating
 let abortController = new AbortController();
 
 
@@ -76,8 +77,14 @@ class MyInlineCompletionItemProvider {
             this.timer = setTimeout(async () => {
                 try {
 					vscode.window.setStatusBarMessage('Autocompleting...');
+
+					//Get the text from the start to the cursor
                     const startText = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
+
+					//Get the text from the cursor to the end
 					const endText = document.getText(new vscode.Range(position, new vscode.Position(document.lineCount, 0)));
+					
+					//Get the programming language
 					const language = document.languageId;
 					
 					//If the prompt is the same as the last one, return the same completion
@@ -185,8 +192,9 @@ class MyInlineCompletionItemProvider {
             { enableScripts: true }
         );		
 
+		//Check if Chroma Docker is running
 		try {
-			await checkDockerContainer();
+			await checkChromaContainer();
 			const myTimeout = setTimeout(createCollections, 2000);
 
 		} catch (error) {
@@ -220,6 +228,7 @@ class MyInlineCompletionItemProvider {
 			// Extract the model names
 			installedModels = modelLines.map(line => line.split(/\s+/)[0].split(':')[0]);
 	
+			//Set default model to code-buddy
 			console.log(`Ollama models: ${installedModels}`);
 			if(installedModels.includes("code-buddy")) {
 				panel.webview.postMessage({
@@ -340,7 +349,7 @@ async function handleUserInput(panel, userInput) {
 					console.log(messageID);
 					console.log(messageScore);
 
-					if(messageScore < 1.5) {
+					if(messageScore < 1.7) {
 						messages += messageMatches[i] + "\n";	
 					}
 				}
@@ -459,9 +468,10 @@ async function stopStream(panel) {
  ****************************************************************************/
 
 
-//Function to check if the Docker container exists and is running
-async function checkDockerContainer() {
+//Function to check if the Chroma container exists and is running
+async function checkChromaContainer() {
     return new Promise((resolve, reject) => {
+		//First check if the container exists
         exec('docker ps -a -q -f name=chroma-container', (err, stdout, stderr) => {
             if (err) {
                 console.error(`Error checking Docker containers: ${err}`);
@@ -470,7 +480,7 @@ async function checkDockerContainer() {
             }
 
             if (stdout.trim()) {
-                // Container exists, check if it's running
+                // It exists, now let's check if it's running
                 exec('docker ps -q -f name=chroma-container', (err, stdout, stderr) => {
                     if (err) {
                         console.error(`Error checking running Docker containers: ${err}`);
@@ -496,7 +506,7 @@ async function checkDockerContainer() {
 }
 
 
-// Function to run the Docker container
+// Function to run the Chroma container
 async function runChromaContainer() {
     return new Promise((resolve, reject) => {
         exec('docker run -p 8000:8000 --name chroma-container chromadb/chroma', (err, stdout, stderr) => {
@@ -512,6 +522,51 @@ async function runChromaContainer() {
     });
 }
 
+// Function to start an existing Chroma container
+async function startChromaContainer() {
+    return new Promise(async (resolve, reject) => {
+        exec('docker start chroma-container', (err, stdout, stderr) => {
+            if (err) {
+                console.error(`Error starting existing Docker container: ${err}`);
+                reject(err);
+                return;
+            }
+            console.log(`Docker container started: ${stdout}`);
+            console.error(`Docker start error output: ${stderr}`);
+            resolve();
+        });
+    });
+}
+
+//Function to stop Chroma container
+async function stopChromaContainer() {
+    try {
+        const { stdout, stderr } = await execAsync('docker stop chroma-container');
+        console.log(`Docker container stopped: ${stdout}`);
+        console.error(`Docker stop error output: ${stderr}`);
+    } catch (err) {
+        console.error(`Error stopping Docker container: ${err}`);
+        throw err;
+    }
+}
+
+// Function to pull the Chroma Docker image
+async function pullChromaImage() {
+    return new Promise((resolve, reject) => {
+        exec('docker pull chromadb/chroma', (err, stdout, stderr) => {
+            if (err) {
+                console.error(`Error pulling Docker image: ${err}`);
+                reject(err);
+                return;
+            }
+            console.log(`Docker image pulled: ${stdout}`);
+            console.error(`Docker pull error output: ${stderr}`);
+            resolve();
+        });
+    });
+}
+
+//This function creates the Chroma collections in which docs/code/messages are saved
 async function createCollections() {
 	docsCollection = await chroma.getOrCreateCollection({
 		name: "docs",
@@ -528,79 +583,7 @@ async function createCollections() {
 	});
 }
 
-// Function to start an existing Docker container
-async function startChromaContainer() {
-    return new Promise(async (resolve, reject) => {
-        exec('docker start chroma-container', (err, stdout, stderr) => {
-            if (err) {
-                console.error(`Error starting existing Docker container: ${err}`);
-                reject(err);
-                return;
-            }
-            console.log(`Docker container started: ${stdout}`);
-            console.error(`Docker start error output: ${stderr}`);
-            resolve();
-        });
-    });
-}
-
-async function stopChromaContainer() {
-    try {
-        const { stdout, stderr } = await execAsync('docker stop chroma-container');
-        console.log(`Docker container stopped: ${stdout}`);
-        console.error(`Docker stop error output: ${stderr}`);
-    } catch (err) {
-        console.error(`Error stopping Docker container: ${err}`);
-        throw err;
-    }
-}
-
-// Function to pull the Docker image
-async function pullChromaImage() {
-    return new Promise((resolve, reject) => {
-        exec('docker pull chromadb/chroma', (err, stdout, stderr) => {
-            if (err) {
-                console.error(`Error pulling Docker image: ${err}`);
-                reject(err);
-                return;
-            }
-            console.log(`Docker image pulled: ${stdout}`);
-            console.error(`Docker pull error output: ${stderr}`);
-            resolve();
-        });
-    });
-}
-
-async function isContainerRunning() {
-    try {
-        const { stdout } = await execAsync('docker ps -q -f name=chroma-container');
-        return !!stdout.trim(); // Returns true if container is running, false otherwise
-    } catch (err) {
-        console.error(`Error checking Docker container status: ${err}`);
-        return false;
-    }
-}
-
-// Function to wait until the Docker container is running
-async function waitForContainer() {
-    const maxAttempts = 30; // Maximum attempts to check (adjust as needed)
-    const delayMs = 1000; // Delay between each check (1 second)
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        console.log(`Checking Docker container status, attempt ${attempt}...`);
-
-        if (await isContainerRunning()) {
-            console.log('Docker container is now running.');
-            return true;
-        }
-
-        await delay(delayMs);
-    }
-
-    console.error(`Timeout: Docker container did not start after ${maxAttempts} attempts.`);
-    return false;
-}
-
+//This function uploads files to the vector DB and Postgres
 async function handleFileUpload(panel, file, fileName) {
     const fileContent = Buffer.from(file, 'base64');
 
@@ -622,6 +605,7 @@ async function handleFileUpload(panel, file, fileName) {
 		chunkOverlap: 100,
 	});
 
+	//Splitting text into chunks for more effective vector DB functionality
 	const chunks = await textSplitter.splitText(uploadedFileText);
 
 	let progressIncrement = 80 / chunks.length;
@@ -671,6 +655,7 @@ async function handleFileUpload(panel, file, fileName) {
     });
 }
 
+//This function deletes the file from vector DB and postgres
 async function removeFileFromDB(panel, ind) {
 	let file = uploadedFiles[ind];
 	uploadedFiles.splice(ind, 1); // Remove the file from the array
@@ -692,6 +677,7 @@ async function removeFileFromDB(panel, ind) {
 	
 }
 
+//Stores codebase in vector DB and postgres
 async function storeCodebase(codebase, fileName) {
 	vscode.window.setStatusBarMessage('Saving...');
 
@@ -723,6 +709,7 @@ async function storeCodebase(codebase, fileName) {
 	upsertCodebase(fileName, codebase);
 }
 
+//Stores message in vector DB and postgres
 async function storeMessage() {
 
 	let message = "User: " + userQuery + "\n Assistant: " + llmResponse;
@@ -1673,12 +1660,10 @@ function getWebviewContent() {
 
 async function deactivate() {
 	try {
-        const { stdout, stderr } = await execAsync('docker stop chroma-container');
-        console.log(`Docker container stopped: ${stdout}`);
-        console.error(`Docker stop error output: ${stderr}`);
+        await stopChromaContainer();
+        console.log('Extension deactivated successfully.');
     } catch (err) {
-        console.error(`Error stopping Docker container: ${err}`);
-        throw err;
+        console.error(`Error deactivating extension: ${err}`);
     }
 }
 
