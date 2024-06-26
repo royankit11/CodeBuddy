@@ -8,6 +8,7 @@ const util = require('util');
 const execAsync = util.promisify(exec);
 const { OpenAI } = require("openai");
 const AbortController = require('abort-controller');
+const { Client } = require('pg');	
 const {RecursiveCharacterTextSplitter} = require('langchain/text_splitter')
 const { ChromaClient } = require("chromadb");
 const fs = require('fs').promises;
