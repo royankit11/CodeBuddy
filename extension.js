@@ -5,6 +5,8 @@ const { Ollama } = require("@langchain/community/llms/ollama");
 const debounce = require('lodash.debounce');
 const pdfParse = require('pdf-parse');
 const { exec , spawn } = require('child_process');
+const util = require('util');
+const execAsync = util.promisify(exec);
 const { OpenAI } = require("openai");
 const AbortController = require('abort-controller');
 const { Pinecone } = require('@pinecone-database/pinecone');
@@ -153,7 +155,6 @@ class MyInlineCompletionItemProvider {
         console.error(`ollama serve error output: ${stderr}`);
     });
 
-	
 
 	//Check if any text has been selected	
     vscode.window.onDidChangeTextEditorSelection(event => {
@@ -182,21 +183,15 @@ class MyInlineCompletionItemProvider {
             'Code Buddy',
             vscode.ViewColumn.Beside,
             { enableScripts: true }
-        );
+        );		
 
-		docsCollection = await chroma.getOrCreateCollection({
-			name: "docs",
-		});
+		try {
+			await checkDockerContainer();
+			const myTimeout = setTimeout(createCollections, 2000);
 
-		codebaseCollection = await chroma.getOrCreateCollection({
-			name: "codebase",
-		});
-
-		await chroma.deleteCollection({name: "messages"})
-
-		messageHistoryCollection = await chroma.getOrCreateCollection({
-			name: "messages",
-		});
+		} catch (error) {
+			console.error('Error setting up Chroma collections:', error);
+		}
 
 		//Load the webview content and send the initial message
         panel.webview.html = getWebviewContent();
@@ -462,6 +457,149 @@ async function stopStream(panel) {
 /****************************************************************************
  * Interacting with Vector DB
  ****************************************************************************/
+
+
+//Function to check if the Docker container exists and is running
+async function checkDockerContainer() {
+    return new Promise((resolve, reject) => {
+        exec('docker ps -a -q -f name=chroma-container', (err, stdout, stderr) => {
+            if (err) {
+                console.error(`Error checking Docker containers: ${err}`);
+                reject(err);
+                return;
+            }
+
+            if (stdout.trim()) {
+                // Container exists, check if it's running
+                exec('docker ps -q -f name=chroma-container', (err, stdout, stderr) => {
+                    if (err) {
+                        console.error(`Error checking running Docker containers: ${err}`);
+                        reject(err);
+                        return;
+                    }
+
+                    if (stdout.trim()) {
+                        // Container is running
+                        console.log('Docker container is already running.');
+                        resolve();
+                    } else {
+                        // Container exists but is not running, start it
+                        startChromaContainer().then(resolve).catch(reject);
+                    }
+                });
+            } else {
+                // Container does not exist, pull the image and run a new container
+                pullChromaImage().then(runChromaContainer).then(resolve).catch(reject);
+            }
+        });
+    });
+}
+
+
+// Function to run the Docker container
+async function runChromaContainer() {
+    return new Promise((resolve, reject) => {
+        exec('docker run -p 8000:8000 --name chroma-container chromadb/chroma', (err, stdout, stderr) => {
+            if (err) {
+                console.error(`Error starting Docker container: ${err}`);
+                reject(err);
+                return;
+            }
+            console.log(`Docker container output: ${stdout}`);
+            console.error(`Docker container error output: ${stderr}`);
+            resolve();
+        });
+    });
+}
+
+async function createCollections() {
+	docsCollection = await chroma.getOrCreateCollection({
+		name: "docs",
+	});
+
+	codebaseCollection = await chroma.getOrCreateCollection({
+		name: "codebase",
+	});
+
+	await chroma.deleteCollection({ name: "messages" });
+
+	messageHistoryCollection = await chroma.getOrCreateCollection({
+		name: "messages",
+	});
+}
+
+// Function to start an existing Docker container
+async function startChromaContainer() {
+    return new Promise(async (resolve, reject) => {
+        exec('docker start chroma-container', (err, stdout, stderr) => {
+            if (err) {
+                console.error(`Error starting existing Docker container: ${err}`);
+                reject(err);
+                return;
+            }
+            console.log(`Docker container started: ${stdout}`);
+            console.error(`Docker start error output: ${stderr}`);
+            resolve();
+        });
+    });
+}
+
+async function stopChromaContainer() {
+    try {
+        const { stdout, stderr } = await execAsync('docker stop chroma-container');
+        console.log(`Docker container stopped: ${stdout}`);
+        console.error(`Docker stop error output: ${stderr}`);
+    } catch (err) {
+        console.error(`Error stopping Docker container: ${err}`);
+        throw err;
+    }
+}
+
+// Function to pull the Docker image
+async function pullChromaImage() {
+    return new Promise((resolve, reject) => {
+        exec('docker pull chromadb/chroma', (err, stdout, stderr) => {
+            if (err) {
+                console.error(`Error pulling Docker image: ${err}`);
+                reject(err);
+                return;
+            }
+            console.log(`Docker image pulled: ${stdout}`);
+            console.error(`Docker pull error output: ${stderr}`);
+            resolve();
+        });
+    });
+}
+
+async function isContainerRunning() {
+    try {
+        const { stdout } = await execAsync('docker ps -q -f name=chroma-container');
+        return !!stdout.trim(); // Returns true if container is running, false otherwise
+    } catch (err) {
+        console.error(`Error checking Docker container status: ${err}`);
+        return false;
+    }
+}
+
+// Function to wait until the Docker container is running
+async function waitForContainer() {
+    const maxAttempts = 30; // Maximum attempts to check (adjust as needed)
+    const delayMs = 1000; // Delay between each check (1 second)
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        console.log(`Checking Docker container status, attempt ${attempt}...`);
+
+        if (await isContainerRunning()) {
+            console.log('Docker container is now running.');
+            return true;
+        }
+
+        await delay(delayMs);
+    }
+
+    console.error(`Timeout: Docker container did not start after ${maxAttempts} attempts.`);
+    return false;
+}
 
 async function handleFileUpload(panel, file, fileName) {
     const fileContent = Buffer.from(file, 'base64');
@@ -1533,7 +1671,16 @@ function getWebviewContent() {
 
 
 
-function deactivate() {}
+async function deactivate() {
+	try {
+        const { stdout, stderr } = await execAsync('docker stop chroma-container');
+        console.log(`Docker container stopped: ${stdout}`);
+        console.error(`Docker stop error output: ${stderr}`);
+    } catch (err) {
+        console.error(`Error stopping Docker container: ${err}`);
+        throw err;
+    }
+}
 
 module.exports = {
     activate,
