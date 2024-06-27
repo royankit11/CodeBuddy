@@ -413,7 +413,12 @@ async function handleUserInput(panel, userInput) {
 		}
 
 		let language = 'javascript'; // default language
-		let languageNext = false; 
+		let languageNext = false;
+		
+		let currentlyTitle = "NoTitle";
+		let currentlyBold = false;
+		let currentlyMarkdown = false;
+		let titleText = "";
 
 		for await (let chunk of currentStream) {
 			if(isGPT) {
@@ -443,7 +448,49 @@ async function handleUserInput(panel, userInput) {
 			if (codeMode) {
 				panel.webview.postMessage({ command: 'updateBotCode', id: messageId, codeId: codeId, code: chunk });
 			} else {
-				panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: chunk });
+				if (chunk.includes("#")) {
+					currentlyTitle = "StartTitle";
+				} else if (chunk.includes("**")) {
+					if (!currentlyBold) {
+						currentlyBold = true;
+					} else {
+						currentlyBold = false;
+					}
+				} else if (chunk.includes("`")) {
+					if (!currentlyMarkdown) {
+						currentlyMarkdown = true;
+					} else {
+						currentlyMarkdown = false;
+					}
+				} else if (chunk.trim() === "") {
+					if (currentlyTitle === "InTitle") {
+						currentlyTitle = "NoTitle";
+						titleText += "</h3><br>";
+						panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: titleText });
+					} else {
+						formattedText = "<br>";
+						panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: formattedText });
+					}
+					
+				} else {
+					if(currentlyBold) {
+						formattedText = "<strong>" + chunk + "</strong>";
+						panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: formattedText });
+					} else if (currentlyMarkdown) {
+						formattedText = "<code>" + chunk + "</code>";
+						panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: formattedText });
+					} else if(currentlyTitle === "StartTitle") {
+						titleText = "<h3>" + chunk;
+						currentlyTitle = "InTitle";
+					} else {
+						if(currentlyTitle === "InTitle") {
+							titleText += chunk;
+						} else {
+							formattedText = chunk;
+							panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: formattedText });
+						}
+					}	
+				}
 			}
 		}
 		panel.webview.postMessage({ command: 'stopStream' });
@@ -812,21 +859,6 @@ async function installModel(panel, selectedModel) {
 	});
 }
 
-function execPromise(command) {
-	return new Promise((resolve, reject) => {
-		exec(command, (error, stdout, stderr) => {
-			if (error) {
-				reject(error);
-				return;
-			}
-			if (stderr) {
-				console.error(`stderr: ${stderr}`);
-			}
-			resolve(stdout);
-		});
-	});
-}
-
 async function installCodeBuddy(panel) {
 	if(!installedModels.includes('phi3')) {
 		vscode.window.showInformationMessage("phi3 needs to be installed first.");
@@ -1036,9 +1068,10 @@ function getWebviewContent() {
 		<title>Code Buddy</title>
 		<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
 		<link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/themes/prism-tomorrow.min.css" rel="stylesheet" />
+		<link href="https://fonts.googleapis.com/css2?family=Ubuntu:ital,wght@0,300;0,400;0,500;0,700;1,300;1,400;1,500;1,700&display=swap" rel="stylesheet">
 		<style>
 			body {
-				font-family: Arial, sans-serif;
+				font-family: 'Ubuntu', sans-serif;
 				margin: 0;
 				padding: 0;
 				display: flex;
@@ -1508,10 +1541,11 @@ function getWebviewContent() {
                 const messageElement = document.getElementById('botMessage-' + id);
                 if (messageElement) {
 					const textElement = document.getElementById(textId);
+
 					if(textElement.textContent === "Responding...") {
-						textElement.textContent = text;
+						textElement.innerHTML = text;
 					} else {
-						textElement.textContent += text;
+						textElement.innerHTML += text;
 					}
 
                     const chatContainer = document.getElementById('chatContainer');
