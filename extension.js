@@ -206,6 +206,7 @@ class MyInlineCompletionItemProvider {
 		panel.webview.postMessage({ command: 'updateBotText', id: "first", textId: "first", text: "Hi there, ask me anything!"});
 
 		//Get the list of uploaded files and display in the webview
+		await ensureTablesExist();
 		uploadedFiles = await getFileNamesFromDocs();
 		panel.webview.postMessage({
 			command: 'updateFileList',
@@ -949,6 +950,61 @@ function removeModel(panel, selectedModel) {
 /****************************************************************************
  * Postgres DB Helper Functions
  ****************************************************************************/
+
+async function ensureTablesExist() {
+	try {
+	  // Check if 'docs' table exists
+	  const checkDocsTableQuery = `
+		SELECT EXISTS (
+		  SELECT 1
+		  FROM information_schema.tables
+		  WHERE table_schema = 'public' AND table_name = 'docs'
+		);
+	  `;
+	  const docsTableCheckResult = await client.query(checkDocsTableQuery);
+	  const docsTableExists = docsTableCheckResult.rows[0].exists;
+  
+	  // Check if 'codebase' table exists
+	  const checkCodebaseTableQuery = `
+		SELECT EXISTS (
+		  SELECT 1
+		  FROM information_schema.tables
+		  WHERE table_schema = 'public' AND table_name = 'codebase'
+		);
+	  `;
+	  const codebaseTableCheckResult = await client.query(checkCodebaseTableQuery);
+	  const codebaseTableExists = codebaseTableCheckResult.rows[0].exists;
+  
+	  // Create 'docs' table if it does not exist
+	  if (!docsTableExists) {
+		const createDocsTableQuery = `
+		  CREATE TABLE docs (
+			id SERIAL PRIMARY KEY,
+			file_name TEXT NOT NULL,
+			text TEXT
+		  );
+		`;
+		await client.query(createDocsTableQuery);
+		console.log("Created 'docs' table.");
+	  }
+  
+	  // Create 'codebase' table if it does not exist
+	  if (!codebaseTableExists) {
+		const createCodebaseTableQuery = `
+		  CREATE TABLE codebase (
+			id SERIAL PRIMARY KEY,
+			file_name TEXT NOT NULL,
+			code TEXT
+		  );
+		`;
+		await client.query(createCodebaseTableQuery);
+		console.log("Created 'codebase' table.");
+	  }
+	  console.log("Tables exist");
+	} catch (error) {
+	  console.error("Error ensuring tables exist:", error);
+	}
+  }
 
 // Function to insert or update document
 async function upsertDocument(fileName, text) {
