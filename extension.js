@@ -77,10 +77,14 @@ class MyInlineCompletionItemProvider {
 					vscode.window.setStatusBarMessage('Autocompleting...');
 
 					//Get the text from the start to the cursor
-                    const startText = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
+					const startLine = Math.max(position.line - 25, 0);
+					const startTextPosition = new vscode.Position(startLine, 0);
+                    const startText = document.getText(new vscode.Range(startTextPosition, position));
 
 					//Get the text from the cursor to the end
-					const endText = document.getText(new vscode.Range(position, new vscode.Position(document.lineCount, 0)));
+					const endLine = Math.min(position.line + 25, document.lineCount - 1);
+                	const endTextPosition = new vscode.Position(endLine, 0);
+					const endText = document.getText(new vscode.Range(position, endTextPosition));
 					
 					//Get the programming language
 					const language = document.languageId;
@@ -101,7 +105,7 @@ class MyInlineCompletionItemProvider {
 						// `Code after cursor:\n${endText}`;
 
 						//const query = `Complete the code. Language is ${language}. Code before cursor: \n${startText}. Code after cursor: \n${endText}`
-						const query = `Complete the code. Language is ${language}: ${startText}`
+						const query = `Complete the code. Keep the completion under 10 lines. Language is ${language}: ${startText}`
 
 						console.log("Query:", query);
 
@@ -980,9 +984,9 @@ async function ensureTablesExist() {
 		const createDocsTableQuery = `
 		  CREATE TABLE docs (
 			id SERIAL PRIMARY KEY,
-			file_name TEXT NOT NULL,
-			text TEXT
-		  );
+			file_name TEXT UNIQUE NOT NULL,
+			text TEXT NOT NULL
+		);
 		`;
 		await client.query(createDocsTableQuery);
 		console.log("Created 'docs' table.");
@@ -993,7 +997,7 @@ async function ensureTablesExist() {
 		const createCodebaseTableQuery = `
 		  CREATE TABLE codebase (
 			id SERIAL PRIMARY KEY,
-			file_name TEXT NOT NULL,
+			file_name TEXT UNIQUE NOT NULL,
 			code TEXT
 		  );
 		`;
