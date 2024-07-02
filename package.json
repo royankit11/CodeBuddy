@@ -16,7 +16,19 @@
       {
         "command": "code-assistant.codeBuddy",
         "title": "Code Buddy"
+      },
+      {
+        "command": "code-assistant.triggerCompletion",
+        "title": "Trigger Completion"
+
       }
+    ],
+    "keybindings": [
+        {
+            "command": "code-assistant.triggerCompletion",
+            "key": "ctrl+shift+l",
+            "when": "editorTextFocus"
+        }
     ]
   },
   "scripts": {

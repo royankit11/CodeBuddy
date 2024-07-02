@@ -27,6 +27,9 @@ const chroma = new ChromaClient();
 let docsCollection;
 let codebaseCollection;
 let messageHistoryCollection;
+this.latestPrompt = ''
+this.latestCompletion = '';
+let autocompleteStream;
 
 let userQuery = '';
 let llmResponse = '';
@@ -60,81 +63,74 @@ const client = new Client({
  ****************************************************************************/
 class MyInlineCompletionItemProvider {
 	constructor() {
-        // Initialize a timer variable
-        this.timer = null;
-
 		this.latestPrompt = ''
 		this.latestCompletion = '';
     }
 
     async provideInlineCompletionItems(document, position, context, token) {
-		clearTimeout(this.timer);
+		return new Promise(async (resolve) => {
+			try {
+				vscode.window.setStatusBarMessage('Autocompleting...');
 
-		return new Promise((resolve) => {
-            // Set a new timer for 2 seconds
-            this.timer = setTimeout(async () => {
-                try {
-					vscode.window.setStatusBarMessage('Autocompleting...');
+				//Get the text from the start to the cursor
+				const startLine = Math.max(position.line - 25, 0);
+				const startTextPosition = new vscode.Position(startLine, 0);
+				const startText = document.getText(new vscode.Range(startTextPosition, position));
 
-					//Get the text from the start to the cursor
-					const startLine = Math.max(position.line - 25, 0);
-					const startTextPosition = new vscode.Position(startLine, 0);
-                    const startText = document.getText(new vscode.Range(startTextPosition, position));
+				//Get the text from the cursor to the end
+				const endLine = Math.min(position.line + 25, document.lineCount - 1);
+				const endTextPosition = new vscode.Position(endLine, 0);
+				const endText = document.getText(new vscode.Range(position, endTextPosition));
+				
+				//Get the programming language
+				const language = document.languageId;
+				
+				//If the prompt is the same as the last one, return the same completion
+				if(startText === this.latestPrompt) {
+					let completionItem = new vscode.InlineCompletionItem(this.latestCompletion);
+					completionItem.range = new vscode.Range(position, position);
+					resolve(new vscode.InlineCompletionList([completionItem]));
+				} else {
+					this.latestPrompt = startText;
+					let completionText = '';
+					abortController = new AbortController();
+					// const query = `Complete the following code snippet in ${language}. ` + 
+					// `Only provide the code continuation, no additional explanations or comments.` +
+					// `Do NOT repeat any part of the provided code snippet. ` +
+					// `Code before cursor:\n${startText}` + 
+					// `Code after cursor:\n${endText}`;
 
-					//Get the text from the cursor to the end
-					const endLine = Math.min(position.line + 25, document.lineCount - 1);
-                	const endTextPosition = new vscode.Position(endLine, 0);
-					const endText = document.getText(new vscode.Range(position, endTextPosition));
+					//const query = `Complete the code. Language is ${language}. Code before cursor: \n${startText}. Code after cursor: \n${endText}`
+					const query = `Complete the code. Keep the completion under 10 lines. Language is ${language}: ${startText}`
+
+					console.log("Query:", query);
+
+					let stream = await ollama.stream(query, { signal: abortController.signal });
 					
-					//Get the programming language
-					const language = document.languageId;
-					
-					//If the prompt is the same as the last one, return the same completion
-					if(startText === this.latestPrompt) {
-						let completionItem = new vscode.InlineCompletionItem(this.latestCompletion);
-						completionItem.range = new vscode.Range(position, position);
-						resolve(new vscode.InlineCompletionList([completionItem]));
-					} else {
-						this.latestPrompt = startText;
-						let completionText = '';
-						abortController = new AbortController();
-						// const query = `Complete the following code snippet in ${language}. ` + 
-						// `Only provide the code continuation, no additional explanations or comments.` +
-						// `Do NOT repeat any part of the provided code snippet. ` +
-						// `Code before cursor:\n${startText}` + 
-						// `Code after cursor:\n${endText}`;
-
-						//const query = `Complete the code. Language is ${language}. Code before cursor: \n${startText}. Code after cursor: \n${endText}`
-						const query = `Complete the code. Keep the completion under 10 lines. Language is ${language}: ${startText}`
-
-						console.log("Query:", query);
-
-						let stream = await ollama.stream(query, { signal: abortController.signal });
-						
-						for await (const chunk of stream) {
-							completionText += chunk;
-							console.log(chunk);
-						}
-						this.latestCompletion = completionText;
-
-						let completionItem = new vscode.InlineCompletionItem(completionText);
-						completionItem.range = new vscode.Range(position, position);
-
-						// Resolve the promise with the completion item
-						vscode.window.setStatusBarMessage('');
-
-						resolve(new vscode.InlineCompletionList([completionItem]));
+					for await (const chunk of stream) {
+						completionText += chunk;
+						console.log(chunk);
 					}
-                } catch (error) {
-                    console.error("Error fetching completion:", error);
+					this.latestCompletion = completionText;
 
-                    // Resolve with an empty completion list in case of an error
-                    resolve(new vscode.InlineCompletionList([]));
-                }
-            }, 2000); // 2000 milliseconds = 2 seconds
+					let completionItem = new vscode.InlineCompletionItem(completionText);
+					completionItem.range = new vscode.Range(position, position);
+
+					// Resolve the promise with the completion item
+					vscode.window.setStatusBarMessage('');
+
+					resolve(new vscode.InlineCompletionList([completionItem]));
+				}
+			} catch (error) {
+				console.error("Error fetching completion:", error);
+
+				// Resolve with an empty completion list in case of an error
+				resolve(new vscode.InlineCompletionList([]));
+			}
         });
     }
 }
+
 
 
 
@@ -183,6 +179,81 @@ class MyInlineCompletionItemProvider {
         await storeCodebase(codebase, fileName);
 
 		vscode.window.setStatusBarMessage('Codebase stored successfully!');
+    });
+
+	const provider = new MyInlineCompletionItemProvider();
+    const completionCommand = vscode.commands.registerCommand('code-assistant.triggerCompletion', async () => {
+		if(autocompleteStream && autocompleteStream.return) {
+			abortController.abort();
+			await autocompleteStream.return();
+			autocompleteStream = null;
+			return;
+		}
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            const document = editor.document;
+			const context = {};
+            const position = editor.selection.active;
+            const token = new vscode.CancellationTokenSource().token;
+
+            vscode.window.setStatusBarMessage('Autocompleting...');
+
+			//Get the text from the start to the cursor
+			const startLine = Math.max(position.line - 25, 0);
+			const startTextPosition = new vscode.Position(startLine, 0);
+			const startText = document.getText(new vscode.Range(startTextPosition, position));
+
+			//Get the text from the cursor to the end
+			const endLine = Math.min(position.line + 25, document.lineCount - 1);
+			const endTextPosition = new vscode.Position(endLine, 0);
+			const endText = document.getText(new vscode.Range(position, endTextPosition));
+			
+			//Get the programming language
+			const language = document.languageId;
+			
+			//If the prompt is the same as the last one, return the same completion
+			if(startText === this.latestPrompt) {
+				let completionItem = new vscode.InlineCompletionItem(this.latestCompletion);
+				completionItem.range = new vscode.Range(position, position);
+				editor.edit(editBuilder => {
+					editBuilder.insert(position, completionItem.insertText);
+				});
+				vscode.window.setStatusBarMessage('');
+			} else {
+				this.latestPrompt = startText;
+				let completionText = '';
+				abortController = new AbortController();
+				const query = `Complete the following code snippet in ${language}. ` + 
+				`Only provide the code continuation, no additional explanations or comments.` +
+				`Do NOT repeat any part of the provided code snippet. ` +
+				`Code before cursor:\n${startText}` + 
+				`Code after cursor:\n${endText}`;
+
+				//const query = `Complete the code. Language is ${language}. Code before cursor: \n${startText}. Code after cursor: \n${endText}`
+				//const query = `Complete the code. Keep the completion under 10 lines. Language is ${language}: ${startText}`
+
+				console.log("Query:", query);
+
+				autocompleteStream = await ollama.stream(query, { signal: abortController.signal });
+
+				let insertPosition = position;
+				
+				for await (const chunk of autocompleteStream) {
+					completionText += chunk;
+					editor.edit(editBuilder => {
+						editBuilder.insert(insertPosition, chunk);
+					});
+					insertPosition = new vscode.Position(insertPosition.line + 1, 0);
+				}
+				this.latestCompletion = completionText;
+
+				let completionItem = new vscode.InlineCompletionItem(completionText);
+				completionItem.range = new vscode.Range(position, position);
+
+				vscode.window.setStatusBarMessage('');
+			}
+        }
+		
     });
 
 	//Register the command to open the chat window
@@ -275,9 +346,7 @@ class MyInlineCompletionItemProvider {
     });
 
     context.subscriptions.push(openChatCommand);
-	context.subscriptions.push(
-        vscode.languages.registerInlineCompletionItemProvider({ pattern: '**' }, new MyInlineCompletionItemProvider())
-    );
+	context.subscriptions.push(completionCommand);
 
 }
 
