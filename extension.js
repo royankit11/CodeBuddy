@@ -58,82 +58,6 @@ const client = new Client({
   });
 
 
-/****************************************************************************
- * Code Completion Engine
- ****************************************************************************/
-class MyInlineCompletionItemProvider {
-	constructor() {
-		this.latestPrompt = ''
-		this.latestCompletion = '';
-    }
-
-    async provideInlineCompletionItems(document, position, context, token) {
-		return new Promise(async (resolve) => {
-			try {
-				vscode.window.setStatusBarMessage('Autocompleting...');
-
-				//Get the text from the start to the cursor
-				const startLine = Math.max(position.line - 25, 0);
-				const startTextPosition = new vscode.Position(startLine, 0);
-				const startText = document.getText(new vscode.Range(startTextPosition, position));
-
-				//Get the text from the cursor to the end
-				const endLine = Math.min(position.line + 25, document.lineCount - 1);
-				const endTextPosition = new vscode.Position(endLine, 0);
-				const endText = document.getText(new vscode.Range(position, endTextPosition));
-				
-				//Get the programming language
-				const language = document.languageId;
-				
-				//If the prompt is the same as the last one, return the same completion
-				if(startText === this.latestPrompt) {
-					let completionItem = new vscode.InlineCompletionItem(this.latestCompletion);
-					completionItem.range = new vscode.Range(position, position);
-					resolve(new vscode.InlineCompletionList([completionItem]));
-				} else {
-					this.latestPrompt = startText;
-					let completionText = '';
-					abortController = new AbortController();
-					// const query = `Complete the following code snippet in ${language}. ` + 
-					// `Only provide the code continuation, no additional explanations or comments.` +
-					// `Do NOT repeat any part of the provided code snippet. ` +
-					// `Code before cursor:\n${startText}` + 
-					// `Code after cursor:\n${endText}`;
-
-					//const query = `Complete the code. Language is ${language}. Code before cursor: \n${startText}. Code after cursor: \n${endText}`
-					const query = `Complete the code. Keep the completion under 10 lines. Language is ${language}: ${startText}`
-
-					console.log("Query:", query);
-
-					let stream = await ollama.stream(query, { signal: abortController.signal });
-					
-					for await (const chunk of stream) {
-						completionText += chunk;
-						console.log(chunk);
-					}
-					this.latestCompletion = completionText;
-
-					let completionItem = new vscode.InlineCompletionItem(completionText);
-					completionItem.range = new vscode.Range(position, position);
-
-					// Resolve the promise with the completion item
-					vscode.window.setStatusBarMessage('');
-
-					resolve(new vscode.InlineCompletionList([completionItem]));
-				}
-			} catch (error) {
-				console.error("Error fetching completion:", error);
-
-				// Resolve with an empty completion list in case of an error
-				resolve(new vscode.InlineCompletionList([]));
-			}
-        });
-    }
-}
-
-
-
-
 
 /****************************************************************************
  * Extension Activation
@@ -180,8 +104,6 @@ class MyInlineCompletionItemProvider {
 
 		vscode.window.setStatusBarMessage('Codebase stored successfully!');
     });
-
-	const provider = new MyInlineCompletionItemProvider();
     const completionCommand = vscode.commands.registerCommand('code-assistant.triggerCompletion', async () => {
 		if(autocompleteStream && autocompleteStream.return) {
 			abortController.abort();
@@ -193,10 +115,10 @@ class MyInlineCompletionItemProvider {
         if (editor) {
             const document = editor.document;
 			const context = {};
-            const position = editor.selection.active;
+            let position = editor.selection.active;
             const token = new vscode.CancellationTokenSource().token;
 
-            vscode.window.setStatusBarMessage('Autocompleting...');
+            vscode.window.setStatusBarMessage('Autocompleting... (press ctrl+shift+L to abort autocomplete)');
 
 			//Get the text from the start to the cursor
 			const startLine = Math.max(position.line - 25, 0);
@@ -236,14 +158,25 @@ class MyInlineCompletionItemProvider {
 
 				autocompleteStream = await ollama.stream(query, { signal: abortController.signal });
 
-				let insertPosition = position;
+				await editor.edit(editBuilder => {
+					editBuilder.insert(position, '\n');  // Insert a new line to create space
+				});
+				position = position.translate(1, 0); 
 				
 				for await (const chunk of autocompleteStream) {
 					completionText += chunk;
-					editor.edit(editBuilder => {
-						editBuilder.insert(insertPosition, chunk);
+					await editor.edit(editBuilder => {
+						editBuilder.insert(position, chunk);
 					});
-					insertPosition = new vscode.Position(insertPosition.line + 1, 0);
+		
+					// Update position after inserting the chunk
+					const chunkLines = chunk.split('\n');
+					const lastLineLength = chunkLines[chunkLines.length - 1].length;
+					if (chunkLines.length > 1) {
+						position = new vscode.Position(position.line + chunkLines.length - 1, lastLineLength);
+					} else {
+						position = position.translate(0, lastLineLength);
+					}
 				}
 				this.latestCompletion = completionText;
 
