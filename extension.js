@@ -1234,11 +1234,13 @@ function getWebviewContent() {
 				align-self: flex-start;
 				background-color: transparent;
 				color: white;
+				font-size: 15px;
 			}
 			.botMessage {
 				align-self: flex-start;
 				background-color: #262525;
 				color: white;
+				font-size: 15px;
 			}
 			#inputContainer {
 				display: flex;
