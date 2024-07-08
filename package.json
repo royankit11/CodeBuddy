@@ -21,8 +21,21 @@
         "command": "code-assistant.triggerCompletion",
         "title": "Trigger Completion"
 
+      },
+      {
+        "command": "extension.debugWithCodeBuddy",
+        "title": "Debug with Code Buddy"
       }
     ],
+    "menus": {
+        "editor/context": [
+            {
+                "command": "extension.debugWithCodeBuddy",
+                "when": "editorHasSelection",
+                "group": "navigation"
+            }
+        ]
+    },
     "keybindings": [
         {
             "command": "code-assistant.triggerCompletion",

@@ -30,6 +30,7 @@ let messageHistoryCollection;
 this.latestPrompt = ''
 this.latestCompletion = '';
 let autocompleteStream;
+let lastFocusedEditor = null;
 
 let userQuery = '';
 let llmResponse = '';
@@ -84,6 +85,13 @@ const client = new Client({
         console.error(`ollama serve error output: ${stderr}`);
     });
 
+	//Remember the last active editor
+	vscode.window.onDidChangeActiveTextEditor(editor => {
+        if (editor) {
+            lastFocusedEditor = editor;
+        }
+    });
+	
 
 	//Check if any text has been selected	
     vscode.window.onDidChangeTextEditorSelection(event => {
@@ -104,6 +112,11 @@ const client = new Client({
 
 		vscode.window.setStatusBarMessage('Codebase stored successfully!');
     });
+
+/****************************************************************************
+ * Code Completion Engine
+ ****************************************************************************/
+
     const completionCommand = vscode.commands.registerCommand('code-assistant.triggerCompletion', async () => {
 		if(autocompleteStream && autocompleteStream.return) {
 			abortController.abort();
@@ -182,6 +195,7 @@ const client = new Client({
 
 				let completionItem = new vscode.InlineCompletionItem(completionText);
 				completionItem.range = new vscode.Range(position, position);
+				autocompleteStream = null;
 
 				vscode.window.setStatusBarMessage('');
 			}
@@ -189,7 +203,59 @@ const client = new Client({
 		
     });
 
-	//Register the command to open the chat window
+/****************************************************************************
+ * Debug with Code Buddy
+ ****************************************************************************/
+
+
+	let debugWithCodeBuddy = vscode.commands.registerCommand('extension.debugWithCodeBuddy', async function () {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+			vscode.window.setStatusBarMessage('Debugging...');
+            const selection = editor.selection;
+            const selectedText = editor.document.getText(selection);
+			let position = selection.end;
+			editor.selection = new vscode.Selection(position, position);
+
+			abortController = new AbortController();
+
+			const query = `Debug the following code. ` + 
+			`Only debug the given code by checking for syntax or semantic errors. You are writing directly in the code editor, so anything that is not code, should be a comment.` + 
+			`Refrain from adding extra code. If there are no errors, ONLY write a code comment saying "All good!". Code: ${selectedText}. `; 
+	
+
+			console.log(query);
+
+			let debugStream = await ollama.stream(query, { signal: abortController.signal });
+
+			await editor.edit(editBuilder => {
+				editBuilder.insert(position, '\n');  // Insert a new line to create space
+			});
+
+			position = position.translate(1, 0); 
+			
+			for await (const chunk of debugStream) {
+				await editor.edit(editBuilder => {
+					editBuilder.insert(position, chunk);
+				});
+	
+				// Update position after inserting the chunk
+				const chunkLines = chunk.split('\n');
+				const lastLineLength = chunkLines[chunkLines.length - 1].length;
+				if (chunkLines.length > 1) {
+					position = new vscode.Position(position.line + chunkLines.length - 1, lastLineLength);
+				} else {
+					position = position.translate(0, lastLineLength);
+				}
+			}
+			vscode.window.setStatusBarMessage('');
+        }
+    });
+
+/****************************************************************************
+ * Open Chat Window
+ ****************************************************************************/
+
     let openChatCommand = vscode.commands.registerCommand('code-assistant.codeBuddy', async function () {
         const panel = vscode.window.createWebviewPanel(
             'chatPanel',
@@ -261,7 +327,7 @@ const client = new Client({
 					panel.webview.postMessage({ command: 'stopStream' });
 					return;
 				}
-                await handleUserInput(panel, message.text);
+                await handleUserInput(panel, message.text, message.useMessageHistory);
             } else if (message.command === 'stopStream') {
                 await stopStream(panel);
             } else if (message.command === 'uploadFile') {
@@ -274,13 +340,15 @@ const client = new Client({
 				installModel(panel, message.model);
 			} else if (message.command === 'removeModel') {
 				removeModel(panel, message.model);
-			}
+			} else if (message.command === 'insertCodeAtLine') {
+				insertCodeAtLine(panel, message.code, message.lineNumber);
+			}  
         });
     });
 
     context.subscriptions.push(openChatCommand);
 	context.subscriptions.push(completionCommand);
-
+	context.subscriptions.push(debugWithCodeBuddy);
 }
 
 /****************************************************************************
@@ -288,7 +356,7 @@ const client = new Client({
  ****************************************************************************/
 
 //Handle user input and get LLM output
-async function handleUserInput(panel, userInput) {
+async function handleUserInput(panel, userInput, useMessageHistory) {
 	abortController.abort();
 	vscode.window.setStatusBarMessage('');
 	//Convert the user input to vector
@@ -308,12 +376,6 @@ async function handleUserInput(panel, userInput) {
 				queryTexts: [userInput], // Chroma will embed this for you
 				nResults: 5, // how many results to return
 			});
-
-			const messageResults = await messageHistoryCollection.query({
-				queryTexts: [userInput], // Chroma will embed this for you
-				nResults: 5, // how many results to return
-			});
-
 	
 			let docMatches = docResults.documents[0];
 			let contextText = "";
@@ -343,25 +405,33 @@ async function handleUserInput(panel, userInput) {
 				+ contextText;
 			}
 
-			let messageMatches = messageResults.documents[0];
-			let messages = "";
+			if(useMessageHistory) {
+				const messageResults = await messageHistoryCollection.query({
+					queryTexts: [userInput], // Chroma will embed this for you
+					nResults: 3, // how many results to return
+				});
 
-			for(let i = 0; i < messageMatches.length; i++) {
-				//If the similarity score is above a certain threshold, add the document and code to the user input
-				if(messageMatches[i]) {
-					let messageID = messageResults.ids[0][i];
-					let messageScore = messageResults.distances[0][i];
-					console.log(messageID);
-					console.log(messageScore);
+				let messageMatches = messageResults.documents[0];
+				let messages = "";
 
-					if(messageScore < 1.7) {
-						messages += messageMatches[i] + "\n";	
+				for(let i = 0; i < messageMatches.length; i++) {
+					//If the similarity score is above a certain threshold, add the document and code to the user input
+					if(messageMatches[i]) {
+						let messageID = messageResults.ids[0][i];
+						let messageScore = messageResults.distances[0][i];
+						console.log(messageID);
+						console.log(messageScore);
+
+						if(messageScore < 1.7) {
+							messages += messageMatches[i] + "\n";	
+						}
 					}
 				}
-			}
-			if(messages.trim() !== "") {
-				finalQuery = "Past message history[This information may or may not be relevant to the query]: " 
-				+ messages;
+				if(messages.trim() !== "") {
+					finalQuery = "Past message history[This information may or may not be relevant to the query]: " 
+					+ messages;
+				}
+
 			}
 
 			let codeMatches = codeResults.documents[0];
@@ -421,11 +491,15 @@ async function handleUserInput(panel, userInput) {
 
 		let language = 'javascript'; // default language
 		let languageNext = false;
+
+
+		//Following chunk is all output formatting
 		
 		let currentlyTitle = "NoTitle";
 		let currentlyBold = false;
-		let currentlyMarkdown = false;
+		let currentlyMarkdown = "NoMarkdown";
 		let titleText = "";
+		let markdownText = "";
 
 		for await (let chunk of currentStream) {
 			if(isGPT) {
@@ -464,10 +538,14 @@ async function handleUserInput(panel, userInput) {
 						currentlyBold = false;
 					}
 				} else if (chunk.includes("`")) {
-					if (!currentlyMarkdown) {
-						currentlyMarkdown = true;
+					chunk = chunk.replace(/`/g, '');
+					if (currentlyMarkdown === "NoMarkdown") {
+						markdownText = "<code>" + chunk;
+						currentlyMarkdown = "InMarkdown";
 					} else {
-						currentlyMarkdown = false;
+						currentlyMarkdown = "NoMarkdown";
+						markdownText += chunk + "</code>";
+						panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: markdownText });
 					}
 				} else if (chunk.trim() === "") {
 					if (currentlyTitle === "InTitle") {
@@ -483,9 +561,8 @@ async function handleUserInput(panel, userInput) {
 					if(currentlyBold) {
 						formattedText = "<strong>" + chunk + "</strong>";
 						panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: formattedText });
-					} else if (currentlyMarkdown) {
-						formattedText = "<code>" + chunk + "</code>";
-						panel.webview.postMessage({ command: 'updateBotText', id: messageId, textId: textId, text: formattedText });
+					} else if (currentlyMarkdown === "InMarkdown") {
+						markdownText += chunk;
 					} else if(currentlyTitle === "StartTitle") {
 						titleText = "<h3>" + chunk;
 						currentlyTitle = "InTitle";
@@ -513,6 +590,35 @@ async function stopStream(panel) {
     }
 	panel.webview.postMessage({ command: 'stopStream' });
 	storeMessage();
+}
+
+//Function to insert code from chat window at a certain line number
+async function insertCodeAtLine(panel, code, lineNumber) {
+	const editor = lastFocusedEditor;
+
+	console.log(lineNumber)
+
+	console.log(editor);
+
+    // Ensure lineNumber is valid and within range
+    if (lineNumber <= 0 || lineNumber > editor.document.lineCount) {
+        vscode.window.showErrorMessage(`Invalid line number: ${lineNumber}`);
+        return;
+    }
+
+    // Convert 1-based lineNumber to 0-based index
+    const position = editor.document.lineAt(lineNumber - 1).range.end;
+
+    // Insert the code at the specified position
+    await editor.edit(editBuilder => {
+        editBuilder.insert(position, code);
+    });
+
+    // Optionally, reveal the inserted line
+    editor.revealRange(new vscode.Range(position, position));
+
+    // Optionally, notify user of successful insertion
+    vscode.window.setStatusBarMessage(`Inserted code at line ${lineNumber}`);
 }
 
 /****************************************************************************
@@ -1376,10 +1482,68 @@ function getWebviewContent() {
 			pre {
 				border-radius: 8px;
 			}
+
+			.copy-button {
+				position: absolute;
+				top: 8px;
+				right: 8px;
+				padding: 5px 10px;
+				font-size: 12px;
+				background-color: #1886d9;
+				color: white;
+				border: none;
+				border-radius: 5px;
+				cursor: pointer;
+				transition: background-color 0.3s;
+			}
+
+			.copy-button:hover {
+				background-color: #0066cc;
+			}
+
+			.insert-button {
+				position: absolute;
+				top: 8px;
+				left: 10px;
+				padding: 5px 10px;
+				font-size: 12px;
+				background-color: #4CAF50;
+				color: white;
+				border: none;
+				border-radius: 5px;
+				cursor: pointer;
+				transition: background-color 0.3s;
+			}
+
+			.insert-button:hover {
+				background-color: #45a049;
+			}
+
+			.line-number {
+				position: absolute;
+				top: 8px;
+				left: 120px;
+				padding: 2px;
+				font-size: 12px;
+				border: 1px solid #ccc;
+				border-radius: 5px;
+				height: 18px;
+				width: 40px;
+			}
+
+			.pre-container {
+				position: relative;
+				border-radius: 8px;
+				color: black;
+			}
 		</style>
 	</head>
 	<body>
 		<div id="header">
+			<div style="display: flex; align-items: center; margin-right: auto;">
+				<input type="checkbox" id="useMessageHistory" name="contextCheckbox" style="margin-right: 5px;">
+				<label for="contextCheckbox" style="color: white;">Use message history?</label>
+			</div>
 			<div id="installButtonContainer" style="margin-right: 10px;"></div>
 		 	<select id="modelSelect" onchange="changeModel()">
 				<option value="code-buddy">code-buddy</option>
@@ -1443,6 +1607,7 @@ function getWebviewContent() {
 				const sendButton = document.getElementById('sendButton');
 				const sendIcon = document.getElementById('sendIcon');
 				const stopIcon = document.getElementById('stopIcon');
+				const useMessageHistory = document.getElementById('useMessageHistory').checked;
 
 				if(isStreaming) {
 					vscode.postMessage({
@@ -1457,7 +1622,8 @@ function getWebviewContent() {
 						addMessageToChat(message, 'userMessage');
 						vscode.postMessage({
 							command: 'sendInput',
-							text: message
+							text: message,
+							useMessageHistory: useMessageHistory
 						});
 						inputBox.value = '';
 						sendIcon.style.display = 'none';
@@ -1622,12 +1788,50 @@ function getWebviewContent() {
 
             function startBotCode(id, codeId, language) {
                 const messageElement = document.getElementById('botMessage-' + id);
+
+				const preContainer = document.createElement('div');
+				preContainer.className = 'pre-container';
+
+				const insertButton = document.createElement('button');
+				insertButton.className = 'insert-button';
+				insertButton.textContent = 'Insert at Line #';
+				insertButton.onclick = function() {
+					const lineNumber = document.getElementById('line-number-input-' + codeId).value;
+					const codeToInsert = document.getElementById(codeId).textContent;
+					vscode.postMessage({
+						command: 'insertCodeAtLine',
+						code: codeToInsert,
+						lineNumber: lineNumber
+					});
+				};
+				preContainer.appendChild(insertButton);
+
+				const lineNumberInput = document.createElement('input');
+				lineNumberInput.type = 'number';
+				lineNumberInput.id = 'line-number-input-' + codeId; // Unique ID for each input
+				lineNumberInput.className = 'line-number';
+				lineNumberInput.placeholder = '5';
+				preContainer.appendChild(lineNumberInput);
+
+				const copyButton = document.createElement('button');
+				copyButton.className = 'copy-button';
+				copyButton.textContent = 'Copy Code';
+				copyButton.onclick = function() {
+					copyCodeToClipboard(codeId);
+					copyButton.textContent = 'Copied!';
+					setTimeout(function() {
+						copyButton.textContent = 'Copy Code';
+					}, 1500); // Revert back to 'Copy Code' after 1.5 seconds
+				};
+				preContainer.appendChild(copyButton);
+
                 const preElement = document.createElement('pre');
                 const codeElement = document.createElement('code');
                 codeElement.id = codeId;
 				codeElement.className = 'language-' + language;
                 preElement.appendChild(codeElement);
-                messageElement.appendChild(preElement);
+				preContainer.appendChild(preElement);
+                messageElement.appendChild(preContainer);
 
                 const chatContainer = document.getElementById('chatContainer');
                 chatContainer.appendChild(messageElement);
@@ -1648,6 +1852,18 @@ function getWebviewContent() {
 					}
 				}
 			}
+			function copyCodeToClipboard(codeId) {
+				const codeElement = document.getElementById(codeId);
+				const range = document.createRange();
+				range.selectNodeContents(codeElement);
+				const selection = window.getSelection();
+				selection.removeAllRanges();
+				selection.addRange(range);
+				document.execCommand('copy');
+				selection.removeAllRanges(); // Deselect the text
+			}
+
+
 			function changeModel() {
                 const modelSelect = document.getElementById('modelSelect');
                 const selectedModel = modelSelect.value;
