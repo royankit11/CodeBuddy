@@ -23,7 +23,6 @@ let activeEditor = null;
 let isGPT = false;
 let currentStream = null;
 let uploadedFiles = [];
-const chroma = new ChromaClient();
 let docsCollection;
 let codebaseCollection;
 let messageHistoryCollection;
@@ -31,11 +30,13 @@ this.latestPrompt = ''
 this.latestCompletion = '';
 let autocompleteStream;
 let lastFocusedEditor = null;
-
 let userQuery = '';
 let llmResponse = '';
 
-//Instatiate Ollama model
+//Instantiate Chroma client, used for vector DB
+const chroma = new ChromaClient();
+
+//Instantiate Ollama model
 let ollama = new Ollama({
     baseUrl: "http://localhost:11434", // Default value
     model: "code-buddy", // Default value
@@ -133,12 +134,12 @@ const client = new Client({
 
             vscode.window.setStatusBarMessage('Autocompleting... (press ctrl+shift+L to abort autocomplete)');
 
-			//Get the text from the start to the cursor
+			//Get the text from 25 lines before the cursor
 			const startLine = Math.max(position.line - 25, 0);
 			const startTextPosition = new vscode.Position(startLine, 0);
 			const startText = document.getText(new vscode.Range(startTextPosition, position));
 
-			//Get the text from the cursor to the end
+			//Get the text from 25 lines after the cursor
 			const endLine = Math.min(position.line + 25, document.lineCount - 1);
 			const endTextPosition = new vscode.Position(endLine, 0);
 			const endText = document.getText(new vscode.Range(position, endTextPosition));
@@ -158,26 +159,28 @@ const client = new Client({
 				this.latestPrompt = startText;
 				let completionText = '';
 				abortController = new AbortController();
+
+				//Query to prompt the LLM
 				const query = `Complete the following code snippet in ${language}. ` + 
 				`Only provide the code continuation, no additional explanations or comments.` +
 				`Do NOT repeat any part of the provided code snippet. ` +
 				`Code before cursor:\n${startText}` + 
 				`Code after cursor:\n${endText}`;
 
-				//const query = `Complete the code. Language is ${language}. Code before cursor: \n${startText}. Code after cursor: \n${endText}`
-				//const query = `Complete the code. Keep the completion under 10 lines. Language is ${language}: ${startText}`
-
 				console.log("Query:", query);
 
+				//Stream LLM Response
 				autocompleteStream = await ollama.stream(query, { signal: abortController.signal });
 
+				// Insert a new line to create space
 				await editor.edit(editBuilder => {
-					editBuilder.insert(position, '\n');  // Insert a new line to create space
+					editBuilder.insert(position, '\n'); 
 				});
 				position = position.translate(1, 0); 
 				
 				for await (const chunk of autocompleteStream) {
 					completionText += chunk;
+					//Incrementally start generating the code
 					await editor.edit(editBuilder => {
 						editBuilder.insert(position, chunk);
 					});
@@ -206,19 +209,20 @@ const client = new Client({
 /****************************************************************************
  * Debug with Code Buddy
  ****************************************************************************/
-
-
 	let debugWithCodeBuddy = vscode.commands.registerCommand('extension.debugWithCodeBuddy', async function () {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
 			vscode.window.setStatusBarMessage('Debugging...');
             const selection = editor.selection;
+
+			//Get the selected text and set the cursor to the end of the selected text
             const selectedText = editor.document.getText(selection);
 			let position = selection.end;
 			editor.selection = new vscode.Selection(position, position);
 
 			abortController = new AbortController();
 
+			//Prompt the LLM to debug the code
 			const query = `Debug the following code. ` + 
 			`Only debug the given code by checking for syntax or semantic errors. You are writing directly in the code editor, so anything that is not code, should be a comment.` + 
 			`Refrain from adding extra code. If there are no errors, ONLY write a code comment saying "All good!". Code: ${selectedText}. `; 
@@ -235,6 +239,7 @@ const client = new Client({
 			position = position.translate(1, 0); 
 			
 			for await (const chunk of debugStream) {
+				//Insert fixed code into editor
 				await editor.edit(editBuilder => {
 					editBuilder.insert(position, chunk);
 				});
@@ -279,8 +284,10 @@ const client = new Client({
 		panel.webview.postMessage({ command: 'startBotText', id: "first", textId: "first" });
 		panel.webview.postMessage({ command: 'updateBotText', id: "first", textId: "first", text: "Hi there, ask me anything!"});
 
-		//Get the list of uploaded files and display in the webview
+		//Make sure that Postgres tables exist
 		await ensureTablesExist();
+
+		//Get the list of uploaded files and display in the webview
 		uploadedFiles = await getFileNamesFromDocs();
 		panel.webview.postMessage({
 			command: 'updateFileList',
@@ -359,22 +366,27 @@ const client = new Client({
 async function handleUserInput(panel, userInput, useMessageHistory) {
 	abortController.abort();
 	vscode.window.setStatusBarMessage('');
-	//Convert the user input to vector
 	let finalQuery = "";
+
+	//Set the user input to a global variable
+	//This variable will be used when storing message history in vector DB
 	userQuery = userInput;
+
 	try {
 		if (selectedText) {
+			//If text is selected, add it to the user input
 			finalQuery = userInput + ". Here is the highlighted code: " + selectedText;
 		} else {
-			//Query the vector DB for the most similar document and code
+			//Query the vector DB for the most similar documents
 			const docResults = await docsCollection.query({
-				queryTexts: [userInput], // Chroma will embed this for you
-				nResults: 5, // how many results to return
+				queryTexts: [userInput],
+				nResults: 5,
 			});
 
+			//Query the vector DB for the most similar code snippets
 			const codeResults = await codebaseCollection.query({
-				queryTexts: [userInput], // Chroma will embed this for you
-				nResults: 5, // how many results to return
+				queryTexts: [userInput], 
+				nResults: 5, 
 			});
 	
 			let docMatches = docResults.documents[0];
@@ -382,14 +394,14 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 			let retrievedDocs = [];
 
 			for(let i = 0; i < docMatches.length; i++) {
-				//If the similarity score is above a certain threshold, add the document and code to the user input
+				//Loop through every retrieved document
 				if(docMatches[i]) {
 					let docID = docResults.ids[0][i];
 					let docScore = docResults.distances[0][i];
 					console.log(docID);
 					console.log(docScore);
 					let cleanedDocID = docID.replace(/-\d+$/, '');
-
+					//If the similarity score is above a certain threshold, add the document to the user input
 					if(docScore < 1.5) {
 						if(!retrievedDocs.includes(cleanedDocID)) {
 							retrievedDocs.push(cleanedDocID);
@@ -400,33 +412,35 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 					}
 				}
 			}
+			//If there are relevant documents, add it to the user input
 			if(contextText.trim() !== "") {
 				finalQuery = "Context [This information may or may not be relevant to the query]: " 
 				+ contextText;
 			}
 
+			//If user has enabled message history, query the vector DB for the most similar messages
 			if(useMessageHistory) {
 				const messageResults = await messageHistoryCollection.query({
-					queryTexts: [userInput], // Chroma will embed this for you
-					nResults: 3, // how many results to return
+					queryTexts: [userInput], 
+					nResults: 3, 
 				});
 
 				let messageMatches = messageResults.documents[0];
 				let messages = "";
 
 				for(let i = 0; i < messageMatches.length; i++) {
-					//If the similarity score is above a certain threshold, add the document and code to the user input
 					if(messageMatches[i]) {
 						let messageID = messageResults.ids[0][i];
 						let messageScore = messageResults.distances[0][i];
 						console.log(messageID);
 						console.log(messageScore);
-
+						//If the similarity score is above a certain threshold, add the message to the history
 						if(messageScore < 1.7) {
 							messages += messageMatches[i] + "\n";	
 						}
 					}
 				}
+				//If there are relevant messages, add it to the user input
 				if(messages.trim() !== "") {
 					finalQuery = "Past message history[This information may or may not be relevant to the query]: " 
 					+ messages;
@@ -438,14 +452,14 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 			let relevantCode = "";
 			let retrievedCodeFiles = [];
 
-			for(let i = 0; i < codeMatches.length; i++) {
-				//If the similarity score is above a certain threshold, add the document and code to the user input
+			for(let i = 0; i < codeMatches.length; i++) {		
 				if(codeMatches[i]) {
 					let codeID = codeResults.ids[0][i];
 					let codeScore = codeResults.distances[0][i];
 					console.log(codeID);
 					console.log(codeScore);
 					let cleanedCodeID = codeID.replace(/-\d+$/, '');
+					//If the similarity score is above a certain threshold, add the code to the user input
 					if(codeScore < 1.5) {
 						if(!retrievedCodeFiles.includes(cleanedCodeID)) {
 							retrievedCodeFiles.push(cleanedCodeID);
@@ -455,7 +469,8 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 					}
 				}
 			}
-	
+			
+			//If there is relevant code, add it to the user input
 			if(relevantCode.trim() !== "") {
 				finalQuery += ". Codebase [This information may or may not be relevant to the query]: " 
 				+ relevantCode;
@@ -479,6 +494,7 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 		panel.webview.postMessage({ command: 'startBotText', id: messageId, textId: textId });
 
 		abortController = new AbortController();
+		//Check if the model is GPT or Ollama
 		if(isGPT) {
 			currentStream = await openai.chat.completions.create({
 				model: "gpt-3.5-turbo",
@@ -493,8 +509,7 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 		let languageNext = false;
 
 
-		//Following chunk is all output formatting
-		
+		//Following block of code is all output formatting
 		let currentlyTitle = "NoTitle";
 		let currentlyBold = false;
 		let currentlyMarkdown = "NoMarkdown";
@@ -596,10 +611,6 @@ async function stopStream(panel) {
 async function insertCodeAtLine(panel, code, lineNumber) {
 	const editor = lastFocusedEditor;
 
-	console.log(lineNumber)
-
-	console.log(editor);
-
     // Ensure lineNumber is valid and within range
     if (lineNumber <= 0 || lineNumber > editor.document.lineCount) {
         vscode.window.showErrorMessage(`Invalid line number: ${lineNumber}`);
@@ -617,7 +628,7 @@ async function insertCodeAtLine(panel, code, lineNumber) {
     // Optionally, reveal the inserted line
     editor.revealRange(new vscode.Range(position, position));
 
-    // Optionally, notify user of successful insertion
+    // Notify user of successful insertion
     vscode.window.setStatusBarMessage(`Inserted code at line ${lineNumber}`);
 }
 
@@ -847,7 +858,6 @@ async function storeCodebase(codebase, fileName) {
     for (let i = 0; i < lines.length; i += 10) {
         const chunk = "Lines " + i + " to " + (i+10) + ": " + lines.slice(i, i + 10).join('\n');
 		const cleanChunk = chunk.replace(/\n/g, " ");
-		//console.log(cleanChunk);
 
 		let fileID = fileName + "-" + i;
 		try {
@@ -891,7 +901,6 @@ async function storeMessage() {
  * LLM Model Management
  ****************************************************************************/
 
-
 async function changeModel(panel, selectedModel) {
     if (selectedModel == "GPT") {
         isGPT = true;
@@ -922,12 +931,13 @@ async function installModel(panel, selectedModel) {
 		installCodeBuddy(panel);
 		return;
 	}
+	// Run the terminal command to pull the model
 	const ollamaProcess = spawn('ollama', ['pull', selectedModel]);
 	let logTimer;
 	let showP = 0;
 
     ollamaProcess.stderr.on('data', (data) => {
-
+		// Show progress every 40 lines
 		showP += 1;
 		if(showP % 40 == 0) {
 			const dataStr = data.toString();
@@ -985,6 +995,7 @@ async function installCodeBuddy(panel) {
 			model: 'code-buddy'
 		});
 	} else {
+		// Create a modelfile
 		const content = ` FROM phi3
 		TEMPLATE "{{ if .System }}<|system|>
 		{{ .System }}<|end|>
@@ -1017,7 +1028,7 @@ async function installCodeBuddy(panel) {
 		}
 	
 	
-		// Run the terminal command
+		//Create code buddy model with modelfile
 		exec('ollama create code-buddy -f ' + filePath, (error, stdout, stderr) => {
 			if (error) {
 			return console.error(`Error executing command: ${error.message}`);
