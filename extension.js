@@ -32,6 +32,7 @@ let autocompleteStream;
 let lastFocusedEditor = null;
 let userQuery = '';
 let llmResponse = '';
+const outputChannel = vscode.window.createOutputChannel('Code Buddy');
 
 //Instantiate Chroma client, used for vector DB
 const chroma = new ChromaClient();
@@ -65,12 +66,12 @@ const client = new Client({
  * Extension Activation
  ****************************************************************************/
  function activate(context) {
-    console.log('Congratulations, your extension "code-assistant" is now active!');
+    logMessage('Congratulations, your extension "code-assistant" is now active!');
 
 	//Connect to the Postgres DB
 	client.connect()
 		.then(() => {
-			console.log('Connected to the database successfully!');
+			logMessage('Connected to the database successfully!');
 		})
 		.catch(err => {
 			console.error('Connection error', err.stack);
@@ -82,7 +83,7 @@ const client = new Client({
             console.error(`Error starting ollama serve: ${err}`);
             return;
         }
-        console.log(`ollama serve output: ${stdout}`);
+        logMessage(`ollama serve output: ${stdout}`);
         console.error(`ollama serve error output: ${stderr}`);
     });
 
@@ -167,7 +168,7 @@ const client = new Client({
 				`Code before cursor:\n${startText}` + 
 				`Code after cursor:\n${endText}`;
 
-				console.log("Query:", query);
+				logMessage("Query:", query);
 
 				//Stream LLM Response
 				autocompleteStream = await ollama.stream(query, { signal: abortController.signal });
@@ -228,7 +229,7 @@ const client = new Client({
 			`Refrain from adding extra code. If there are no errors, ONLY write a code comment saying "All good!". Code: ${selectedText}. `; 
 	
 
-			console.log(query);
+			logMessage(query);
 
 			let debugStream = await ollama.stream(query, { signal: abortController.signal });
 
@@ -268,6 +269,7 @@ const client = new Client({
             vscode.ViewColumn.Beside,
             { enableScripts: true }
         );		
+
 
 		//Check if Chroma Docker is running
 		try {
@@ -309,7 +311,7 @@ const client = new Client({
 			installedModels = modelLines.map(line => line.split(/\s+/)[0].split(':')[0]);
 	
 			//Set default model to code-buddy
-			console.log(`Ollama models: ${installedModels}`);
+			logMessage(`Ollama models: ${installedModels}`);
 			if(installedModels.includes("code-buddy")) {
 				panel.webview.postMessage({
 					command: 'showInstallButton',
@@ -390,6 +392,7 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 			});
 	
 			let docMatches = docResults.documents[0];
+
 			let contextText = "";
 			let retrievedDocs = [];
 
@@ -398,8 +401,8 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 				if(docMatches[i]) {
 					let docID = docResults.ids[0][i];
 					let docScore = docResults.distances[0][i];
-					console.log(docID);
-					console.log(docScore);
+					logMessage(docID);
+					logMessage(docScore);
 					let cleanedDocID = docID.replace(/-\d+$/, '');
 					//If the similarity score is above a certain threshold, add the document to the user input
 					if(docScore < 1.5) {
@@ -432,8 +435,8 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 					if(messageMatches[i]) {
 						let messageID = messageResults.ids[0][i];
 						let messageScore = messageResults.distances[0][i];
-						console.log(messageID);
-						console.log(messageScore);
+						logMessage(messageID);
+						logMessage(messageScore);
 						//If the similarity score is above a certain threshold, add the message to the history
 						if(messageScore < 1.7) {
 							messages += messageMatches[i] + "\n";	
@@ -456,8 +459,8 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 				if(codeMatches[i]) {
 					let codeID = codeResults.ids[0][i];
 					let codeScore = codeResults.distances[0][i];
-					console.log(codeID);
-					console.log(codeScore);
+					logMessage(codeID);
+					logMessage(codeScore);
 					let cleanedCodeID = codeID.replace(/-\d+$/, '');
 					//If the similarity score is above a certain threshold, add the code to the user input
 					if(codeScore < 1.5) {
@@ -478,9 +481,9 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 			finalQuery += (finalQuery !== "") ? ".\n\n User Query: " + userInput :  userInput;
 		}
 	} catch(exception) {
-		console.log(exception);
+		logMessage(exception);
 	} finally {
-		console.log(finalQuery);
+		logMessage(finalQuery);
 		if(finalQuery === "") {
 			finalQuery = userInput;
 		}
@@ -534,7 +537,7 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 			}
 			if (languageNext) {
 				language = chunk;
-				console.log(language);
+				logMessage(language);
 				languageNext = false; // reset the flag
 				codeId = "codeId-" + Date.now();
 				panel.webview.postMessage({ command: 'startBotCode', id: messageId, codeId: codeId, language: language });
@@ -636,14 +639,13 @@ async function insertCodeAtLine(panel, code, lineNumber) {
  * Interacting with Vector DB
  ****************************************************************************/
 
-
 //Function to check if the Chroma container exists and is running
 async function checkChromaContainer() {
     return new Promise((resolve, reject) => {
 		//First check if the container exists
         exec('docker ps -a -q -f name=chroma-container', (err, stdout, stderr) => {
             if (err) {
-                console.error(`Error checking Docker containers: ${err}`);
+                logMessage(`Error checking Docker containers: ${err}`);
                 reject(err);
                 return;
             }
@@ -652,14 +654,14 @@ async function checkChromaContainer() {
                 // It exists, now let's check if it's running
                 exec('docker ps -q -f name=chroma-container', (err, stdout, stderr) => {
                     if (err) {
-                        console.error(`Error checking running Docker containers: ${err}`);
+                        logMessage(`Error checking running Docker containers: ${err}`);
                         reject(err);
                         return;
                     }
 
                     if (stdout.trim()) {
                         // Container is running
-                        console.log('Docker container is already running.');
+                        logMessage('Docker container is already running.');
                         resolve();
                     } else {
                         // Container exists but is not running, start it
@@ -684,8 +686,8 @@ async function runChromaContainer() {
                 reject(err);
                 return;
             }
-            console.log(`Docker container output: ${stdout}`);
-            console.error(`Docker container error output: ${stderr}`);
+            logMessage(`Docker container output: ${stdout}`);
+            logMessage(`Docker container error output: ${stderr}`);
             resolve();
         });
     });
@@ -700,8 +702,8 @@ async function startChromaContainer() {
                 reject(err);
                 return;
             }
-            console.log(`Docker container started: ${stdout}`);
-            console.error(`Docker start error output: ${stderr}`);
+            logMessage(`Docker container started: ${stdout}`);
+            logMessage(`Docker start error output: ${stderr}`);
             resolve();
         });
     });
@@ -711,7 +713,7 @@ async function startChromaContainer() {
 async function stopChromaContainer() {
     try {
         const { stdout, stderr } = await execAsync('docker stop chroma-container');
-        console.log(`Docker container stopped: ${stdout}`);
+        logMessage(`Docker container stopped: ${stdout}`);
         console.error(`Docker stop error output: ${stderr}`);
     } catch (err) {
         console.error(`Error stopping Docker container: ${err}`);
@@ -728,7 +730,7 @@ async function pullChromaImage() {
                 reject(err);
                 return;
             }
-            console.log(`Docker image pulled: ${stdout}`);
+            logMessage(`Docker image pulled: ${stdout}`);
             console.error(`Docker pull error output: ${stderr}`);
             resolve();
         });
@@ -797,7 +799,7 @@ async function handleFileUpload(panel, file, fileName) {
 			});
 
 		} catch(exception) {
-			console.log(exception);
+			vscode.window.showErrorMessage(exception);
 		}
 
 		panel.webview.postMessage({
@@ -837,9 +839,9 @@ async function removeFileFromDB(panel, ind) {
 		const docsToDelete = await docsCollection.delete({
 			where: {fileName: file},
 		  });
-		  console.log(docsToDelete);
+		  logMessage(docsToDelete);
 	} catch(exception) {
-		console.log(exception);
+		logMessage(exception);
 	} finally {
 		deleteDocument(file);
 	}
@@ -851,7 +853,7 @@ async function storeCodebase(codebase, fileName) {
 	vscode.window.setStatusBarMessage('Saving...');
 
 	fileName = fileName.split('/').pop();
-	console.log(fileName);
+	logMessage(fileName);
 
 	const lines = codebase.split('\n');
 
@@ -869,9 +871,9 @@ async function storeCodebase(codebase, fileName) {
 				metadatas: [{fileName: fileName}]
 			});
 		} catch(exception) {
-			console.log(exception);
+			logMessage(exception);
 		} finally {
-			console.log("Codebase stored successfully.");
+			logMessage("Codebase stored successfully.");
 		}
     }
 	upsertCodebase(fileName, codebase);
@@ -890,9 +892,9 @@ async function storeMessage() {
 			ids: ["message-" + Date.now()],
 		});
 	} catch(exception) {
-		console.log(exception);
+		logMessage(exception);
 	} finally {
-		console.log("Messages stored successfully.");
+		logMessage("Messages stored successfully.");
 	}
 }
 
@@ -909,21 +911,21 @@ async function changeModel(panel, selectedModel) {
         isGPT = false;
     }
 	if(installedModels.includes(selectedModel)) {
-		console.log("installed");
+		logMessage("installed");
 		panel.webview.postMessage({
 			command: 'showInstallButton',
 			visible: false,
 			model: selectedModel
 		});
 	} else {
-		console.log("not installed");
+		logMessage("not installed");
 		panel.webview.postMessage({
 			command: 'showInstallButton',
 			visible: true,
 			model: selectedModel
 		});
 	}
-    console.log(`Switching to model: ${selectedModel}`);
+    logMessage(`Switching to model: ${selectedModel}`);
 }
 
 async function installModel(panel, selectedModel) {
@@ -947,7 +949,7 @@ async function installModel(panel, selectedModel) {
 			const match = dataStr.match(percentageRegex);
 			if (match) {
 				const percentage = match[1];
-				console.log(`Progress: ${percentage}%`);
+				logMessage(`Progress: ${percentage}%`);
 				panel.webview.postMessage({
 					command: 'updateProgress',
 					percent: percentage + '%'
@@ -970,7 +972,7 @@ async function installModel(panel, selectedModel) {
 				console.error(`Error pulling ollama model: ${code}`);
 				return;
 			}
-			console.log(`Ollama pull completed successfully.`);
+			logMessage(`Ollama pull completed successfully.`);
 			installedModels.push(selectedModel);
 			panel.webview.postMessage({
 				command: 'showInstallButton',
@@ -1014,12 +1016,12 @@ async function installCodeBuddy(panel) {
 	
 		const filePath = path.join('/tmp', 'ModelfileCustomized');
 
-		console.log(`Writing to file: ${filePath}`);
+		logMessage(`Writing to file: ${filePath}`);
 	
 		await fs.writeFile(filePath, content);
 
 		const fileContent = await fs.readFile(filePath, 'utf8');
-		console.log('File content:', fileContent);
+		logMessage('File content:', fileContent);
 
 		const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
 		if (!fileExists) {
@@ -1060,7 +1062,7 @@ function removeModel(panel, selectedModel) {
 			console.error(`Error removing ollama model: ${code}`);
 			return;
 		}
-		console.log(`Ollama remove completed successfully.`);
+		logMessage(`Ollama remove completed successfully.`);
 		installedModels = installedModels.filter(model => model !== selectedModel);
 		panel.webview.postMessage({
 			command: 'showInstallButton',
@@ -1108,7 +1110,7 @@ async function ensureTablesExist() {
 		);
 		`;
 		await client.query(createDocsTableQuery);
-		console.log("Created 'docs' table.");
+		logMessage("Created 'docs' table.");
 	  }
   
 	  // Create 'codebase' table if it does not exist
@@ -1121,9 +1123,9 @@ async function ensureTablesExist() {
 		  );
 		`;
 		await client.query(createCodebaseTableQuery);
-		console.log("Created 'codebase' table.");
+		logMessage("Created 'codebase' table.");
 	  }
-	  console.log("Tables exist");
+	  logMessage("Tables exist");
 	} catch (error) {
 	  console.error("Error ensuring tables exist:", error);
 	}
@@ -1140,7 +1142,7 @@ async function upsertDocument(fileName, text) {
 	  `;
 	  const values = [fileName, text];
 	  await client.query(query, values);
-	  console.log('Document inserted/updated successfully');
+	  logMessage('Document inserted/updated successfully');
 	} catch (err) {
 	  console.error('Error inserting/updating document', err);
 	} 
@@ -1157,7 +1159,7 @@ async function upsertDocument(fileName, text) {
 	  `;
 	  const values = [fileName, code];
 	  await client.query(query, values);
-	  console.log('Document inserted/updated successfully');
+	  logMessage('Document inserted/updated successfully');
 	} catch (err) {
 	  console.error('Error inserting/updating document', err);
 	} 
@@ -1175,7 +1177,7 @@ async function upsertDocument(fileName, text) {
             // Return the first row (assuming filename is unique)
             return result.rows[0].code;
         } else {
-            console.log(`Document with filename '${fileName}' not found`);
+            logMessage(`Document with filename '${fileName}' not found`);
             return null;
         }
     } catch (error) {
@@ -1192,7 +1194,7 @@ async function deleteDocument(fileName) {
         `;
         const values = [fileName]; // Match any file_name starting with `fileName` followed by a hyphen and digits
         await client.query(query, values);
-        console.log('Documents deleted successfully');
+        logMessage('Documents deleted successfully');
     } catch (err) {
         console.error('Error deleting documents', err);
     }
@@ -1225,13 +1227,19 @@ async function getDocumentByFileName(fileName) {
             // Return the first row (assuming filename is unique)
             return result.rows[0].text;
         } else {
-            console.log(`Document with filename '${fileName}' not found`);
+            logMessage(`Document with filename '${fileName}' not found`);
             return null;
         }
     } catch (error) {
         console.error("Error fetching document by filename:", error);
         return null; // Return null if an error occurs
     }
+}
+
+function logMessage(message) {
+	console.log(message);
+	outputChannel.appendLine(message);
+	outputChannel.show();
 }
 
 /****************************************************************************
@@ -1984,7 +1992,7 @@ function getWebviewContent() {
 async function deactivate() {
 	try {
         await stopChromaContainer();
-        console.log('Extension deactivated successfully.');
+        logMessage('Extension deactivated successfully.');
     } catch (err) {
         console.error(`Error deactivating extension: ${err}`);
     }

@@ -1,6 +1,7 @@
 {
   "name": "code-assistant",
-  "displayName": "Code Assistant",
+  "displayName": "Code Buddy",
+  "publisher": "SutherlandDev",
   "description": "",
   "version": "0.0.1",
   "engines": {
@@ -20,7 +21,6 @@
       {
         "command": "code-assistant.triggerCompletion",
         "title": "Trigger Completion"
-
       },
       {
         "command": "extension.debugWithCodeBuddy",
@@ -28,20 +28,20 @@
       }
     ],
     "menus": {
-        "editor/context": [
-            {
-                "command": "extension.debugWithCodeBuddy",
-                "when": "editorHasSelection",
-                "group": "navigation"
-            }
-        ]
+      "editor/context": [
+        {
+          "command": "extension.debugWithCodeBuddy",
+          "when": "editorHasSelection",
+          "group": "navigation"
+        }
+      ]
     },
     "keybindings": [
-        {
-            "command": "code-assistant.triggerCompletion",
-            "key": "ctrl+shift+l",
-            "when": "editorTextFocus"
-        }
+      {
+        "command": "code-assistant.triggerCompletion",
+        "key": "ctrl+shift+l",
+        "when": "editorTextFocus"
+      }
     ]
   },
   "scripts": {
