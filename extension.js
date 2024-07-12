@@ -34,6 +34,9 @@ let userQuery = '';
 let llmResponse = '';
 const outputChannel = vscode.window.createOutputChannel('Code Buddy');
 
+let docDatabase = {};
+let codeDatabase = {};
+
 //Instantiate Chroma client, used for vector DB
 const chroma = new ChromaClient();
 
@@ -52,13 +55,13 @@ let abortController = new AbortController();
 
 
 //Instatiate Postgres DB
-const client = new Client({
-	host: 'localhost',
-	port: 5433, // Default port for PostgreSQL
-	user: 'postgres', // Replace with your PostgreSQL username
-	password: 'testing', // Replace with your PostgreSQL password
-	database: 'postgres' // Replace with your PostgreSQL database name
-  });
+// const client = new Client({
+// 	host: 'localhost',
+// 	port: 5433, // Default port for PostgreSQL
+// 	user: 'postgres', // Replace with your PostgreSQL username
+// 	password: 'testing', // Replace with your PostgreSQL password
+// 	database: 'postgres' // Replace with your PostgreSQL database name
+//   });
 
 
 
@@ -69,22 +72,22 @@ const client = new Client({
     logMessage('Congratulations, your extension "code-assistant" is now active!');
 
 	//Connect to the Postgres DB
-	client.connect()
-		.then(() => {
-			logMessage('Connected to the database successfully!');
-		})
-		.catch(err => {
-			console.error('Connection error', err.stack);
-		});
+	// client.connect()
+	// 	.then(() => {
+	// 		logMessage('Connected to the database successfully!');
+	// 	})
+	// 	.catch(err => {
+	// 		console.error('Connection error', err.stack);
+	// 	});
 
 	//Start the Ollama server
     exec('ollama serve', (err, stdout, stderr) => {
         if (err) {
-            console.error(`Error starting ollama serve: ${err}`);
+            logMessage(`Error starting ollama serve: ${err}`);
             return;
         }
         logMessage(`ollama serve output: ${stdout}`);
-        console.error(`ollama serve error output: ${stderr}`);
+        logMessage(`ollama serve error output: ${stderr}`);
     });
 
 	//Remember the last active editor
@@ -287,7 +290,7 @@ const client = new Client({
 		panel.webview.postMessage({ command: 'updateBotText', id: "first", textId: "first", text: "Hi there, ask me anything!"});
 
 		//Make sure that Postgres tables exist
-		await ensureTablesExist();
+		//await ensureTablesExist();
 
 		//Get the list of uploaded files and display in the webview
 		uploadedFiles = await getFileNamesFromDocs();
@@ -299,7 +302,7 @@ const client = new Client({
 		//Get the list of installed models and display in the webview
 		exec('ollama list', (err, stdout, stderr) => {
 			if (err) {
-				console.error(`Error listing ollama models: ${err}`);
+				logMessage(`Error listing ollama models: ${err}`);
 				return;
 			}
 			const lines = stdout.split('\n');
@@ -408,7 +411,8 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 					if(docScore < 1.5) {
 						if(!retrievedDocs.includes(cleanedDocID)) {
 							retrievedDocs.push(cleanedDocID);
-							let text = await getDocumentByFileName(cleanedDocID);
+							//let text = await getDocumentByFileName(cleanedDocID);
+							let text = docDatabase[cleanedDocID];
 							contextText += cleanedDocID + ": " + text + "\n";
 						}
 						
@@ -466,7 +470,8 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 					if(codeScore < 1.5) {
 						if(!retrievedCodeFiles.includes(cleanedCodeID)) {
 							retrievedCodeFiles.push(cleanedCodeID);
-							let snippet = await getCodeByFileName(cleanedCodeID);
+							//let snippet = await getCodeByFileName(cleanedCodeID);
+							let snippet = codeDatabase[cleanedCodeID];
 							relevantCode += cleanedCodeID + ": " + snippet + "\n";
 						}
 					}
@@ -739,9 +744,13 @@ async function pullChromaImage() {
 
 //This function creates the Chroma collections in which docs/code/messages are saved
 async function createCollections() {
+	await chroma.deleteCollection({ name: "docs" });
+
 	docsCollection = await chroma.getOrCreateCollection({
 		name: "docs",
 	});
+
+	await chroma.deleteCollection({ name: "codebase" });
 
 	codebaseCollection = await chroma.getOrCreateCollection({
 		name: "codebase",
@@ -812,7 +821,9 @@ async function handleFileUpload(panel, file, fileName) {
 
 	await Promise.all(promises);
 
-	upsertDocument(fileName, uploadedFileText);
+	docDatabase[fileName] = uploadedFileText;
+
+	//upsertDocument(fileName, uploadedFileText);
 
 	uploadedFiles.push(fileName); // Add the filename to the array
 	panel.webview.postMessage({
@@ -843,7 +854,8 @@ async function removeFileFromDB(panel, ind) {
 	} catch(exception) {
 		logMessage(exception);
 	} finally {
-		deleteDocument(file);
+		delete docDatabase[fileName];
+		//deleteDocument(file);
 	}
 	
 }
@@ -876,7 +888,8 @@ async function storeCodebase(codebase, fileName) {
 			logMessage("Codebase stored successfully.");
 		}
     }
-	upsertCodebase(fileName, codebase);
+	codeDatabase[fileName] = codebase;
+	//upsertCodebase(fileName, codebase);
 }
 
 //Stores message in vector DB and postgres
@@ -1013,10 +1026,6 @@ async function installCodeBuddy(panel) {
 		You will assist users in completing, explaining, and debugging code. User's can upload files as context which you can use to guide
 		them in their development experience."
 		`;
-	
-		const filePath = path.join('/tmp', 'ModelfileCustomized');
-
-		logMessage(`Writing to file: ${filePath}`);
 	
 		await fs.writeFile(filePath, content);
 
@@ -1238,8 +1247,8 @@ async function getDocumentByFileName(fileName) {
 
 function logMessage(message) {
 	console.log(message);
-	outputChannel.appendLine(message);
-	outputChannel.show();
+	//outputChannel.appendLine(message);
+	//outputChannel.show();
 }
 
 /****************************************************************************
@@ -1848,6 +1857,7 @@ function getWebviewContent() {
                 const codeElement = document.createElement('code');
                 codeElement.id = codeId;
 				codeElement.className = 'language-' + language;
+				codeElement.innerHTML = '<br>' + codeElement.innerHTML;m
                 preElement.appendChild(codeElement);
 				preContainer.appendChild(preElement);
                 messageElement.appendChild(preContainer);
