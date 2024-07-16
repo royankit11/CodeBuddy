@@ -293,7 +293,7 @@ let abortController = new AbortController();
 		//await ensureTablesExist();
 
 		//Get the list of uploaded files and display in the webview
-		uploadedFiles = await getFileNamesFromDocs();
+		//uploadedFiles = await getFileNamesFromDocs();
 		panel.webview.postMessage({
 			command: 'updateFileList',
 			files: uploadedFiles
@@ -529,6 +529,7 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 				chunk = chunk.choices[0].delta
 			}
 			llmResponse += chunk;
+			console.log(chunk);
 			
 			if (chunk.includes("```")) {
 				codeMode = !codeMode;
@@ -1247,8 +1248,7 @@ async function getDocumentByFileName(fileName) {
 
 function logMessage(message) {
 	console.log(message);
-	//outputChannel.appendLine(message);
-	//outputChannel.show();
+	outputChannel.appendLine(message);
 }
 
 /****************************************************************************
@@ -1857,7 +1857,7 @@ function getWebviewContent() {
                 const codeElement = document.createElement('code');
                 codeElement.id = codeId;
 				codeElement.className = 'language-' + language;
-				codeElement.innerHTML = '<br>' + codeElement.innerHTML;m
+				codeElement.innerHTML = '<br></br>' + codeElement.innerHTML;
                 preElement.appendChild(codeElement);
 				preContainer.appendChild(preElement);
                 messageElement.appendChild(preContainer);
