@@ -10,7 +10,8 @@ const { OpenAI } = require("openai");
 const AbortController = require('abort-controller');
 const { Client } = require('pg');	
 const {RecursiveCharacterTextSplitter} = require('langchain/text_splitter')
-const { ChromaClient } = require("chromadb");
+const { ChromaClient, DefaultEmbeddingFunction} = require("chromadb");
+TransformersApi = Function('return import("@xenova/transformers")')();
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -63,6 +64,16 @@ let abortController = new AbortController();
 // 	database: 'postgres' // Replace with your PostgreSQL database name
 //   });
 
+class MyEmbeddingFunction {
+	async generate(texts) {
+		const { pipeline } = await TransformersApi;
+		const embedder = await pipeline('embeddings', 'Xenova/all-MiniLM-L6-v2');
+		console.log(texts[0]);
+		let embedding = await embedder(texts[0]);
+		console.log(embedding);
+		return embedding;
+	}
+  }
 
 
 /****************************************************************************
@@ -271,8 +282,9 @@ let abortController = new AbortController();
             'Code Buddy',
             vscode.ViewColumn.Beside,
             { enableScripts: true }
-        );		
+        );
 
+	
 
 		//Check if Chroma Docker is running
 		try {
@@ -282,6 +294,8 @@ let abortController = new AbortController();
 		} catch (error) {
 			console.error('Error setting up Chroma collections:', error);
 		}
+
+
 
 		//Load the webview content and send the initial message
         panel.webview.html = getWebviewContent();
@@ -298,6 +312,7 @@ let abortController = new AbortController();
 			command: 'updateFileList',
 			files: uploadedFiles
 		});
+
 
 		//Get the list of installed models and display in the webview
 		exec('ollama list', (err, stdout, stderr) => {
@@ -529,7 +544,6 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 				chunk = chunk.choices[0].delta
 			}
 			llmResponse += chunk;
-			console.log(chunk);
 			
 			if (chunk.includes("```")) {
 				codeMode = !codeMode;
@@ -855,7 +869,7 @@ async function removeFileFromDB(panel, ind) {
 	} catch(exception) {
 		logMessage(exception);
 	} finally {
-		delete docDatabase[fileName];
+		delete docDatabase[file];
 		//deleteDocument(file);
 	}
 	
