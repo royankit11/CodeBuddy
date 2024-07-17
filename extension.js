@@ -11,7 +11,6 @@ const AbortController = require('abort-controller');
 const { Client } = require('pg');	
 const {RecursiveCharacterTextSplitter} = require('langchain/text_splitter')
 const { ChromaClient, DefaultEmbeddingFunction} = require("chromadb");
-TransformersApi = Function('return import("@xenova/transformers")')();
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -64,16 +63,103 @@ let abortController = new AbortController();
 // 	database: 'postgres' // Replace with your PostgreSQL database name
 //   });
 
+// class MyEmbeddingFunction {
+// 	async generate(texts) {
+// 		const { pipeline } = await TransformersApi;
+// 		const embedder = await pipeline('embeddings', 'Xenova/all-MiniLM-L6-v2');
+// 		console.log(texts[0]);
+// 		let embedding = await embedder(texts[0]);
+// 		console.log(embedding);
+// 		return embedding;
+// 	}
+//   }
+let TransformersApi;
+
 class MyEmbeddingFunction {
-	async generate(texts) {
-		const { pipeline } = await TransformersApi;
-		const embedder = await pipeline('embeddings', 'Xenova/all-MiniLM-L6-v2');
-		console.log(texts[0]);
-		let embedding = await embedder(texts[0]);
-		console.log(embedding);
-		return embedding;
-	}
+	
+  /**
+   * DefaultEmbeddingFunction constructor.
+   * @param {Object} options The configuration options.
+   * @param {string} [options.model] The model to use to calculate embeddings. Defaults to 'Xenova/all-MiniLM-L6-v2', which is an ONNX port of `sentence-transformers/all-MiniLM-L6-v2`.
+   * @param {string} [options.revision] The specific model version to use (can be a branch, tag name, or commit id). Defaults to 'main'.
+   * @param {boolean} [options.quantized] Whether to load the 8-bit quantized version of the model. Defaults to `false`.
+   * @param {Function|null} [options.progress_callback] If specified, this function will be called during model construction, to provide the user with progress updates.
+   */
+  constructor({
+    model = "Xenova/all-MiniLM-L6-v2",
+    revision = "main",
+    quantized = false,
+    progress_callback = null,
+  } = {}) {
+    this.model = model;
+    this.revision = revision;
+    this.quantized = quantized;
+    this.progress_callback = progress_callback;
+    this.pipelinePromise = null;
+    this.transformersApi = null;
   }
+
+  async generate(texts) {
+    await this.loadClient();
+
+    this.pipelinePromise = new Promise(async (resolve, reject) => {
+      try {
+        const pipeline = this.transformersApi;
+        const quantized = this.quantized;
+        const revision = this.revision;
+        const progress_callback = this.progress_callback;
+
+        resolve(
+          await pipeline("feature-extraction", this.model, {
+            quantized,
+            revision,
+            progress_callback,
+          })
+        );
+      } catch (e) {
+        reject(e);
+      }
+    });
+
+    const pipe = await this.pipelinePromise;
+    const output = await pipe(texts, { pooling: "mean", normalize: true });
+    return output.tolist();
+  }
+
+  async loadClient() {
+    if (this.transformersApi) return;
+    try {
+      	const { pipeline } = await MyEmbeddingFunction.import();
+      	TransformersApi = pipeline;
+    } catch (e) {
+      if (e.code === "MODULE_NOT_FOUND") {
+        throw new Error(
+          "Please install the chromadb-default-embed package to use the DefaultEmbeddingFunction, `npm install -S chromadb-default-embed`"
+        );
+      }
+      throw e;
+    }
+    this.transformersApi = TransformersApi;
+  }
+
+  static async import() {
+    try {
+		let importResult;
+		outputChannel.appendLine('Something something');
+    	importResult = await import("chromadb-default-embed");
+		const { pipeline, env } = importResult;
+		outputChannel.appendLine('we did it');
+		env.allowLocalModels = false;
+		outputChannel.appendLine('done');
+      	return { pipeline };
+    } catch (e) {
+	outputChannel.appendLine(e);
+      throw new Error(
+        "Please install chromadb-default-embed as a dependency with, e.g. `yarn add chromadb-default-embed`"
+      );
+    }
+  }
+}
 
 
 /****************************************************************************
@@ -81,6 +167,7 @@ class MyEmbeddingFunction {
  ****************************************************************************/
  function activate(context) {
     logMessage('Congratulations, your extension "code-assistant" is now active!');
+	logMessage(process.version);
 
 	//Connect to the Postgres DB
 	// client.connect()
@@ -763,18 +850,21 @@ async function createCollections() {
 
 	docsCollection = await chroma.getOrCreateCollection({
 		name: "docs",
+		embeddingFunction: new MyEmbeddingFunction(),
 	});
 
 	await chroma.deleteCollection({ name: "codebase" });
 
 	codebaseCollection = await chroma.getOrCreateCollection({
 		name: "codebase",
+		embeddingFunction: new MyEmbeddingFunction(),
 	});
 
 	await chroma.deleteCollection({ name: "messages" });
 
 	messageHistoryCollection = await chroma.getOrCreateCollection({
 		name: "messages",
+		embeddingFunction: new MyEmbeddingFunction(),
 	});
 }
 
@@ -1592,8 +1682,8 @@ function getWebviewContent() {
                 <option value="phi3">phi3</option>
 				<option value="granite-code">granite-code</option>
                 <option value="llama2">llama2</option>
+				<option value="llama3">llama3</option>
                 <option value="codellama">codellama</option>
-				<option value="GPT">GPT</option>
             </select>
         </div>
 		<div id="chatContainer">
