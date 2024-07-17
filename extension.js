@@ -13,6 +13,7 @@ const {RecursiveCharacterTextSplitter} = require('langchain/text_splitter')
 const { ChromaClient, DefaultEmbeddingFunction} = require("chromadb");
 const fs = require('fs').promises;
 const path = require('path');
+const { OllamaEmbeddings } = require("@langchain/community/embeddings/ollama");
 
 //Declare global variables
 let installedModels = [];
@@ -54,113 +55,23 @@ const openai = new OpenAI({
 let abortController = new AbortController();
 
 
-//Instatiate Postgres DB
-// const client = new Client({
-// 	host: 'localhost',
-// 	port: 5433, // Default port for PostgreSQL
-// 	user: 'postgres', // Replace with your PostgreSQL username
-// 	password: 'testing', // Replace with your PostgreSQL password
-// 	database: 'postgres' // Replace with your PostgreSQL database name
-//   });
+//Ollama embedder used to convert text to vector
+const embedder = new OllamaEmbeddings({
+	model: "phi3", // default value
+	baseUrl: "http://localhost:11434", // default value
+});
 
-// class MyEmbeddingFunction {
-// 	async generate(texts) {
-// 		const { pipeline } = await TransformersApi;
-// 		const embedder = await pipeline('embeddings', 'Xenova/all-MiniLM-L6-v2');
-// 		console.log(texts[0]);
-// 		let embedding = await embedder(texts[0]);
-// 		console.log(embedding);
-// 		return embedding;
-// 	}
-//   }
-let TransformersApi;
+
+/****************************************************************************
+ * Embedding Function for Vector DB
+ ****************************************************************************/
 
 class MyEmbeddingFunction {
-	
-  /**
-   * DefaultEmbeddingFunction constructor.
-   * @param {Object} options The configuration options.
-   * @param {string} [options.model] The model to use to calculate embeddings. Defaults to 'Xenova/all-MiniLM-L6-v2', which is an ONNX port of `sentence-transformers/all-MiniLM-L6-v2`.
-   * @param {string} [options.revision] The specific model version to use (can be a branch, tag name, or commit id). Defaults to 'main'.
-   * @param {boolean} [options.quantized] Whether to load the 8-bit quantized version of the model. Defaults to `false`.
-   * @param {Function|null} [options.progress_callback] If specified, this function will be called during model construction, to provide the user with progress updates.
-   */
-  constructor({
-    model = "Xenova/all-MiniLM-L6-v2",
-    revision = "main",
-    quantized = false,
-    progress_callback = null,
-  } = {}) {
-    this.model = model;
-    this.revision = revision;
-    this.quantized = quantized;
-    this.progress_callback = progress_callback;
-    this.pipelinePromise = null;
-    this.transformersApi = null;
-  }
-
-  async generate(texts) {
-    await this.loadClient();
-
-    this.pipelinePromise = new Promise(async (resolve, reject) => {
-      try {
-        const pipeline = this.transformersApi;
-        const quantized = this.quantized;
-        const revision = this.revision;
-        const progress_callback = this.progress_callback;
-
-        resolve(
-          await pipeline("feature-extraction", this.model, {
-            quantized,
-            revision,
-            progress_callback,
-          })
-        );
-      } catch (e) {
-        reject(e);
-      }
-    });
-
-    const pipe = await this.pipelinePromise;
-    const output = await pipe(texts, { pooling: "mean", normalize: true });
-    return output.tolist();
-  }
-
-  async loadClient() {
-    if (this.transformersApi) return;
-    try {
-      	const { pipeline } = await MyEmbeddingFunction.import();
-      	TransformersApi = pipeline;
-    } catch (e) {
-      if (e.code === "MODULE_NOT_FOUND") {
-        throw new Error(
-          "Please install the chromadb-default-embed package to use the DefaultEmbeddingFunction, `npm install -S chromadb-default-embed`"
-        );
-      }
-      throw e;
-    }
-    this.transformersApi = TransformersApi;
-  }
-
-  static async import() {
-    try {
-		let importResult;
-		outputChannel.appendLine('Something something');
-    	importResult = await import("chromadb-default-embed");
-		const { pipeline, env } = importResult;
-		outputChannel.appendLine('we did it');
-		env.allowLocalModels = false;
-		outputChannel.appendLine('done');
-      	return { pipeline };
-    } catch (e) {
-	outputChannel.appendLine(e);
-      throw new Error(
-        "Please install chromadb-default-embed as a dependency with, e.g. `yarn add chromadb-default-embed`"
-      );
-    }
-  }
+	async generate(texts) {
+		const embeddings = await embedder.embedQuery(texts[0]);
+		return embeddings;
+	}
 }
-
 
 /****************************************************************************
  * Extension Activation
@@ -168,15 +79,6 @@ class MyEmbeddingFunction {
  function activate(context) {
     logMessage('Congratulations, your extension "code-assistant" is now active!');
 	logMessage(process.version);
-
-	//Connect to the Postgres DB
-	// client.connect()
-	// 	.then(() => {
-	// 		logMessage('Connected to the database successfully!');
-	// 	})
-	// 	.catch(err => {
-	// 		console.error('Connection error', err.stack);
-	// 	});
 
 	//Start the Ollama server
     exec('ollama serve', (err, stdout, stderr) => {
@@ -510,7 +412,7 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 					logMessage(docScore);
 					let cleanedDocID = docID.replace(/-\d+$/, '');
 					//If the similarity score is above a certain threshold, add the document to the user input
-					if(docScore < 1.5) {
+					if(docScore < 2000) {
 						if(!retrievedDocs.includes(cleanedDocID)) {
 							retrievedDocs.push(cleanedDocID);
 							//let text = await getDocumentByFileName(cleanedDocID);
@@ -544,7 +446,7 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 						logMessage(messageID);
 						logMessage(messageScore);
 						//If the similarity score is above a certain threshold, add the message to the history
-						if(messageScore < 1.7) {
+						if(messageScore < 2000) {
 							messages += messageMatches[i] + "\n";	
 						}
 					}
@@ -569,7 +471,7 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 					logMessage(codeScore);
 					let cleanedCodeID = codeID.replace(/-\d+$/, '');
 					//If the similarity score is above a certain threshold, add the code to the user input
-					if(codeScore < 1.5) {
+					if(codeScore < 2000) {
 						if(!retrievedCodeFiles.includes(cleanedCodeID)) {
 							retrievedCodeFiles.push(cleanedCodeID);
 							//let snippet = await getCodeByFileName(cleanedCodeID);
@@ -715,31 +617,6 @@ async function stopStream(panel) {
     }
 	panel.webview.postMessage({ command: 'stopStream' });
 	storeMessage();
-}
-
-//Function to insert code from chat window at a certain line number
-async function insertCodeAtLine(panel, code, lineNumber) {
-	const editor = lastFocusedEditor;
-
-    // Ensure lineNumber is valid and within range
-    if (lineNumber <= 0 || lineNumber > editor.document.lineCount) {
-        vscode.window.showErrorMessage(`Invalid line number: ${lineNumber}`);
-        return;
-    }
-
-    // Convert 1-based lineNumber to 0-based index
-    const position = editor.document.lineAt(lineNumber - 1).range.end;
-
-    // Insert the code at the specified position
-    await editor.edit(editBuilder => {
-        editBuilder.insert(position, code);
-    });
-
-    // Optionally, reveal the inserted line
-    editor.revealRange(new vscode.Range(position, position));
-
-    // Notify user of successful insertion
-    vscode.window.setStatusBarMessage(`Inserted code at line ${lineNumber}`);
 }
 
 /****************************************************************************
@@ -1187,168 +1064,34 @@ function removeModel(panel, selectedModel) {
 }
 
 /****************************************************************************
- * Postgres DB Helper Functions
+ * Helper Methods
  ****************************************************************************/
 
-async function ensureTablesExist() {
-	try {
-	  // Check if 'docs' table exists
-	  const checkDocsTableQuery = `
-		SELECT EXISTS (
-		  SELECT 1
-		  FROM information_schema.tables
-		  WHERE table_schema = 'public' AND table_name = 'docs'
-		);
-	  `;
-	  const docsTableCheckResult = await client.query(checkDocsTableQuery);
-	  const docsTableExists = docsTableCheckResult.rows[0].exists;
-  
-	  // Check if 'codebase' table exists
-	  const checkCodebaseTableQuery = `
-		SELECT EXISTS (
-		  SELECT 1
-		  FROM information_schema.tables
-		  WHERE table_schema = 'public' AND table_name = 'codebase'
-		);
-	  `;
-	  const codebaseTableCheckResult = await client.query(checkCodebaseTableQuery);
-	  const codebaseTableExists = codebaseTableCheckResult.rows[0].exists;
-  
-	  // Create 'docs' table if it does not exist
-	  if (!docsTableExists) {
-		const createDocsTableQuery = `
-		  CREATE TABLE docs (
-			id SERIAL PRIMARY KEY,
-			file_name TEXT UNIQUE NOT NULL,
-			text TEXT NOT NULL
-		);
-		`;
-		await client.query(createDocsTableQuery);
-		logMessage("Created 'docs' table.");
-	  }
-  
-	  // Create 'codebase' table if it does not exist
-	  if (!codebaseTableExists) {
-		const createCodebaseTableQuery = `
-		  CREATE TABLE codebase (
-			id SERIAL PRIMARY KEY,
-			file_name TEXT UNIQUE NOT NULL,
-			code TEXT
-		  );
-		`;
-		await client.query(createCodebaseTableQuery);
-		logMessage("Created 'codebase' table.");
-	  }
-	  logMessage("Tables exist");
-	} catch (error) {
-	  console.error("Error ensuring tables exist:", error);
-	}
-  }
+//Function to insert code from chat window at a certain line number
+async function insertCodeAtLine(panel, code, lineNumber) {
+	const editor = lastFocusedEditor;
 
-// Function to insert or update document
-async function upsertDocument(fileName, text) {
-	try {
-	  const query = `
-		INSERT INTO docs (file_name, text)
-		VALUES ($1, $2)
-		ON CONFLICT (file_name)
-		DO UPDATE SET text = EXCLUDED.text;
-	  `;
-	  const values = [fileName, text];
-	  await client.query(query, values);
-	  logMessage('Document inserted/updated successfully');
-	} catch (err) {
-	  console.error('Error inserting/updating document', err);
-	} 
-  }
-
-  // Function to insert or update document
-  async function upsertCodebase(fileName, code) {
-	try {
-	  const query = `
-		INSERT INTO codebase (file_name, code)
-		VALUES ($1, $2)
-		ON CONFLICT (file_name)
-		DO UPDATE SET code = EXCLUDED.code;
-	  `;
-	  const values = [fileName, code];
-	  await client.query(query, values);
-	  logMessage('Document inserted/updated successfully');
-	} catch (err) {
-	  console.error('Error inserting/updating document', err);
-	} 
-  }
-
-  async function getCodeByFileName(fileName) {
-    try {
-        const query = `
-            SELECT code FROM codebase
-            WHERE file_name = $1
-        `;
-        const values = [fileName];
-        const result = await client.query(query, values);
-        if (result.rows.length > 0) {
-            // Return the first row (assuming filename is unique)
-            return result.rows[0].code;
-        } else {
-            logMessage(`Document with filename '${fileName}' not found`);
-            return null;
-        }
-    } catch (error) {
-        console.error("Error fetching document by filename:", error);
-        return null; // Return null if an error occurs
+    // Ensure lineNumber is valid and within range
+    if (lineNumber <= 0 || lineNumber > editor.document.lineCount) {
+        vscode.window.showErrorMessage(`Invalid line number: ${lineNumber}`);
+        return;
     }
+
+    // Convert 1-based lineNumber to 0-based index
+    const position = editor.document.lineAt(lineNumber - 1).range.end;
+
+    // Insert the code at the specified position
+    await editor.edit(editBuilder => {
+        editBuilder.insert(position, code);
+    });
+
+    // Optionally, reveal the inserted line
+    editor.revealRange(new vscode.Range(position, position));
+
+    // Notify user of successful insertion
+    vscode.window.setStatusBarMessage(`Inserted code at line ${lineNumber}`);
 }
 
-async function deleteDocument(fileName) {
-    try {
-        const query = `
-            DELETE FROM docs
-            WHERE file_name = $1
-        `;
-        const values = [fileName]; // Match any file_name starting with `fileName` followed by a hyphen and digits
-        await client.query(query, values);
-        logMessage('Documents deleted successfully');
-    } catch (err) {
-        console.error('Error deleting documents', err);
-    }
-}
-
-async function getFileNamesFromDocs() {
-    try {
-        const query = `
-            SELECT DISTINCT regexp_replace(file_name, '-\\d+$', '') AS file_name
-            FROM docs
-        `;
-        const result = await client.query(query);
-        const fileNames = result.rows.map(row => row.file_name);
-        return fileNames;
-    } catch (error) {
-        console.error("Error fetching file names from docs:", error);
-        return []; // Return an empty array if an error occurs
-    }
-}
-
-async function getDocumentByFileName(fileName) {
-    try {
-        const query = `
-            SELECT text FROM docs
-            WHERE file_name = $1
-        `;
-        const values = [fileName];
-        const result = await client.query(query, values);
-        if (result.rows.length > 0) {
-            // Return the first row (assuming filename is unique)
-            return result.rows[0].text;
-        } else {
-            logMessage(`Document with filename '${fileName}' not found`);
-            return null;
-        }
-    } catch (error) {
-        console.error("Error fetching document by filename:", error);
-        return null; // Return null if an error occurs
-    }
-}
 
 function logMessage(message) {
 	console.log(message);
