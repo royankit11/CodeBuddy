@@ -1,40 +1,81 @@
-//Import all libraries
+/****************************************************************************
+ * Libraries
+ ****************************************************************************/
 const vscode = require('vscode');
+
+//Ollama model used to query LLM and Ollama Embeddings for turning text into vectors
 const { Ollama } = require("@langchain/community/llms/ollama");
-const debounce = require('lodash.debounce');
-const pdfParse = require('pdf-parse');
-const { exec , spawn } = require('child_process');
-const util = require('util');
-const execAsync = util.promisify(exec);
-const { OpenAI } = require("openai");
-const AbortController = require('abort-controller');
-const { Client } = require('pg');	
-const {RecursiveCharacterTextSplitter} = require('langchain/text_splitter')
-const { ChromaClient, DefaultEmbeddingFunction} = require("chromadb");
-const fs = require('fs').promises;
-const path = require('path');
 const { OllamaEmbeddings } = require("@langchain/community/embeddings/ollama");
 
-//Declare global variables
+//PDF parser used to extract text from PDFs
+const pdfParse = require('pdf-parse');
+
+//Child process used to run terminal commands
+const { exec , spawn } = require('child_process');
+
+const util = require('util');
+//ExecAsync is a promisified version of exec (run terminal commands asynchronously)
+const execAsync = util.promisify(exec);
+
+const { OpenAI } = require("openai");
+
+//Abort controller used to stop LLMs from generating
+const AbortController = require('abort-controller');
+
+//Text splitter used to split file text into chunks for better embedding
+const {RecursiveCharacterTextSplitter} = require('langchain/text_splitter')
+
+//Chroma client used to interact with vector DB
+const { ChromaClient} = require("chromadb");
+
+//fs used to read and write files
+const fs = require('fs').promises;
+
+const path = require('path');
+
+/****************************************************************************
+ * Global Variables
+ ****************************************************************************/
+
+//Installed LLM models on user's machine
 let installedModels = [];
+
+//Message history is an array of objects that contain the user query and the LLM response
 let messageHistory = [];
+
+//Selected text is the text that is highlighted in the editor used as context for LLM query
 let selectedText = '';
-let uploadedFileText = '';
+
+//Tracking active editor and last focused editor
 let activeEditor = null;
+let lastFocusedEditor = null;
+
 let isGPT = false;
+
+//Monitoring if an LLM is streaming at the moment (whether for query or code completion)
 let currentStream = null;
+let autocompleteStream;
+
+//Array of uploaded files
 let uploadedFiles = [];
+
+//Chroma DB vector collections
 let docsCollection;
 let codebaseCollection;
 let messageHistoryCollection;
+
+//Expediting code completion by keeping track of latest prompt and completion
 this.latestPrompt = ''
 this.latestCompletion = '';
-let autocompleteStream;
-let lastFocusedEditor = null;
+
+//User query and LLM response, especially for message history
 let userQuery = '';
 let llmResponse = '';
+
+//Global output channel for logging
 const outputChannel = vscode.window.createOutputChannel('Code Buddy');
 
+//Document and code database (replacement for Postgres)
 let docDatabase = {};
 let codeDatabase = {};
 
@@ -65,7 +106,6 @@ const embedder = new OllamaEmbeddings({
 /****************************************************************************
  * Embedding Function for Vector DB
  ****************************************************************************/
-
 class MyEmbeddingFunction {
 	async generate(texts) {
 		const embeddings = await embedder.embedQuery(texts[0]);
@@ -97,7 +137,6 @@ class MyEmbeddingFunction {
         }
     });
 	
-
 	//Check if any text has been selected	
     vscode.window.onDidChangeTextEditorSelection(event => {
         const editor = event.textEditor;
@@ -121,8 +160,8 @@ class MyEmbeddingFunction {
 /****************************************************************************
  * Code Completion Engine
  ****************************************************************************/
-
     const completionCommand = vscode.commands.registerCommand('code-assistant.triggerCompletion', async () => {
+		//If hotkey is triggered during a stream, abort the completion
 		if(autocompleteStream && autocompleteStream.return) {
 			abortController.abort();
 			await autocompleteStream.return();
@@ -147,6 +186,8 @@ class MyEmbeddingFunction {
 			const endLine = Math.min(position.line + 25, document.lineCount - 1);
 			const endTextPosition = new vscode.Position(endLine, 0);
 			const endText = document.getText(new vscode.Range(position, endTextPosition));
+
+			console.log(startText);
 			
 			//Get the programming language
 			const language = document.languageId;
@@ -264,7 +305,6 @@ class MyEmbeddingFunction {
 /****************************************************************************
  * Open Chat Window
  ****************************************************************************/
-
     let openChatCommand = vscode.commands.registerCommand('code-assistant.codeBuddy', async function () {
         const panel = vscode.window.createWebviewPanel(
             'chatPanel',
@@ -755,7 +795,7 @@ async function handleFileUpload(panel, file, fileName) {
     });
 
     const data = await pdfParse(fileContent);
-    uploadedFileText = data.text;
+    let uploadedFileText = data.text;
 
 	panel.webview.postMessage({
         command: 'updateProgress',
@@ -804,8 +844,6 @@ async function handleFileUpload(panel, file, fileName) {
 	await Promise.all(promises);
 
 	docDatabase[fileName] = uploadedFileText;
-
-	//upsertDocument(fileName, uploadedFileText);
 
 	uploadedFiles.push(fileName); // Add the filename to the array
 	panel.webview.postMessage({
