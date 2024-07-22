@@ -1048,16 +1048,18 @@ async function installCodeBuddy(panel) {
 		`;
 
 		const filePath = path.join('/tmp', 'ModelfileCustomized');
-	
-		await fs.writeFile(filePath, content);
+		try {
+			await fs.writeFile(filePath, content);
+			const fileContent = await fs.readFile(filePath, 'utf8');
+			logMessage('File content:', fileContent);
 
-		const fileContent = await fs.readFile(filePath, 'utf8');
-		logMessage('File content:', fileContent);
-
-		const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
-		if (!fileExists) {
-			console.error(`File not found at path: ${filePath}`);
-			return;
+			const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
+			if (!fileExists) {
+				console.error(`File not found at path: ${filePath}`);
+				return;
+			}
+		} catch (exception) {
+			logMessage(exception);
 		}
 	
 	
