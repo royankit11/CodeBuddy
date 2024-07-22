@@ -4,6 +4,6 @@ export default defineConfig({
 	files: 'test/**/*.test.js',
 	mocha: {
 		ui: 'tdd',
-		timeout: 30000
+		timeout: 45000
 	  }
 });

@@ -1046,6 +1046,8 @@ async function installCodeBuddy(panel) {
 		You will assist users in completing, explaining, and debugging code. User's can upload files as context which you can use to guide
 		them in their development experience."
 		`;
+
+		const filePath = path.join('/tmp', 'ModelfileCustomized');
 	
 		await fs.writeFile(filePath, content);
 
