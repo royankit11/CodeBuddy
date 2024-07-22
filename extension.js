@@ -30,8 +30,8 @@ const { ChromaClient} = require("chromadb");
 
 //fs used to read and write files
 const fs = require('fs').promises;
-
 const path = require('path');
+const os = require('os');
 
 /****************************************************************************
  * Global Variables
@@ -1047,7 +1047,7 @@ async function installCodeBuddy(panel) {
 		them in their development experience."
 		`;
 
-		const filePath = path.join('/tmp', 'ModelfileCustomized');
+		const filePath = path.join(os.tmpdir(), 'ModelfileCustomized');
 		try {
 			await fs.writeFile(filePath, content);
 			const fileContent = await fs.readFile(filePath, 'utf8');
