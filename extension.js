@@ -102,12 +102,7 @@ const embedder = new OllamaEmbeddings({
 	baseUrl: "http://localhost:11434", // default value
 });
 
-const panel = vscode.window.createWebviewPanel(
-	'chatPanel',
-	'Code Buddy',
-	vscode.ViewColumn.Beside,
-	{ enableScripts: true }
-);
+let panel = null;
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000; // in milliseconds
@@ -329,6 +324,13 @@ class MyEmbeddingFunction {
  * Open Chat Window
  ****************************************************************************/
     let openChatCommand = vscode.commands.registerCommand('code-assistant.codeBuddy', async function () {
+
+		panel = vscode.window.createWebviewPanel(
+			'chatPanel',
+			'Code Buddy',
+			vscode.ViewColumn.Beside,
+			{ enableScripts: true }
+		);
 
 		//Check if Chroma Docker is running
 		try {
