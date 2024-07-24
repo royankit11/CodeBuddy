@@ -102,6 +102,16 @@ const embedder = new OllamaEmbeddings({
 	baseUrl: "http://localhost:11434", // default value
 });
 
+const panel = vscode.window.createWebviewPanel(
+	'chatPanel',
+	'Code Buddy',
+	vscode.ViewColumn.Beside,
+	{ enableScripts: true }
+);
+
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 1000; // in milliseconds
+
 
 /****************************************************************************
  * Embedding Function for Vector DB
@@ -118,16 +128,12 @@ class MyEmbeddingFunction {
  ****************************************************************************/
  function activate(context) {
     logMessage('Congratulations, your extension "code-assistant" is now active!');
-	logMessage(process.version);
 
 	//Start the Ollama server
     exec('ollama serve', (err, stdout, stderr) => {
         if (err) {
-            logMessage(`Error starting ollama serve: ${err}`);
             return;
         }
-        logMessage(`ollama serve output: ${stdout}`);
-        logMessage(`ollama serve error output: ${stderr}`);
     });
 
 	//Remember the last active editor
@@ -254,7 +260,7 @@ class MyEmbeddingFunction {
 /****************************************************************************
  * Debug with Code Buddy
  ****************************************************************************/
-	let debugWithCodeBuddy = vscode.commands.registerCommand('extension.debugWithCodeBuddy', async function () {
+	let debugWithCodeBuddy = vscode.commands.registerCommand('code-assistant.debugWithCodeBuddy', async function () {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
 			vscode.window.setStatusBarMessage('Debugging...');
@@ -303,17 +309,26 @@ class MyEmbeddingFunction {
     });
 
 /****************************************************************************
+ * Explain with Code Buddy
+ ****************************************************************************/
+
+	let explainWithCodeBuddy = vscode.commands.registerCommand('code-assistant.explainWithCodeBuddy', async function () {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            const selection = editor.selection;
+
+			//Get the selected text and set the cursor to the end of the selected text
+            selectedText = editor.document.getText(selection);
+
+			panel.webview.postMessage({ command: 'explainCode', text: "Explain this code"});
+		
+        }
+    });
+
+/****************************************************************************
  * Open Chat Window
  ****************************************************************************/
     let openChatCommand = vscode.commands.registerCommand('code-assistant.codeBuddy', async function () {
-        const panel = vscode.window.createWebviewPanel(
-            'chatPanel',
-            'Code Buddy',
-            vscode.ViewColumn.Beside,
-            { enableScripts: true }
-        );
-
-	
 
 		//Check if Chroma Docker is running
 		try {
@@ -344,36 +359,7 @@ class MyEmbeddingFunction {
 
 
 		//Get the list of installed models and display in the webview
-		exec('ollama list', (err, stdout, stderr) => {
-			if (err) {
-				logMessage(`Error listing ollama models: ${err}`);
-				return;
-			}
-			const lines = stdout.split('\n');
-	
-			// Remove the header line and any empty lines
-			const modelLines = lines.slice(1).filter(line => line.trim() !== '');
-	
-			// Extract the model names
-			installedModels = modelLines.map(line => line.split(/\s+/)[0].split(':')[0]);
-	
-			//Set default model to code-buddy
-			logMessage(`Ollama models: ${installedModels}`);
-			if(installedModels.includes("code-buddy")) {
-				panel.webview.postMessage({
-					command: 'showInstallButton',
-					visible: false,
-					model: "code-buddy"
-				});
-			} else {
-				panel.webview.postMessage({
-					command: 'showInstallButton',
-					visible: true,
-					model: "code-buddy"
-				});
-			}
-	
-		});
+		listOllamaModels();
 
 		//Handle messages from the webview and redirect to appropriate functions
         panel.webview.onDidReceiveMessage(async message => {
@@ -383,21 +369,21 @@ class MyEmbeddingFunction {
 					panel.webview.postMessage({ command: 'stopStream' });
 					return;
 				}
-                await handleUserInput(panel, message.text, message.useMessageHistory);
+                await handleUserInput(message.text, message.useMessageHistory);
             } else if (message.command === 'stopStream') {
-                await stopStream(panel);
+                await stopStream();
             } else if (message.command === 'uploadFile') {
-                await handleFileUpload(panel, message.file, message.fileName);
+                await handleFileUpload(message.file, message.fileName);
             } else if (message.command === 'changeModel') {
-                await changeModel(panel, message.model);
+                await changeModel(message.model);
             } else if (message.command === 'removeFile') {
-				await removeFileFromDB(panel, message.index);				
+				await removeFileFromDB(message.index);				
 			} else if (message.command === 'installModel') {
-				installModel(panel, message.model);
+				installModel(message.model);
 			} else if (message.command === 'removeModel') {
-				removeModel(panel, message.model);
+				removeModel(message.model);
 			} else if (message.command === 'insertCodeAtLine') {
-				insertCodeAtLine(panel, message.code, message.lineNumber);
+				insertCodeAtLine(message.code, message.lineNumber);
 			}  
         });
     });
@@ -405,6 +391,7 @@ class MyEmbeddingFunction {
     context.subscriptions.push(openChatCommand);
 	context.subscriptions.push(completionCommand);
 	context.subscriptions.push(debugWithCodeBuddy);
+	context.subscriptions.push(explainWithCodeBuddy);
 }
 
 /****************************************************************************
@@ -412,7 +399,7 @@ class MyEmbeddingFunction {
  ****************************************************************************/
 
 //Handle user input and get LLM output
-async function handleUserInput(panel, userInput, useMessageHistory) {
+async function handleUserInput(userInput, useMessageHistory) {
 	abortController.abort();
 	vscode.window.setStatusBarMessage('');
 	let finalQuery = "";
@@ -448,8 +435,7 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 				if(docMatches[i]) {
 					let docID = docResults.ids[0][i];
 					let docScore = docResults.distances[0][i];
-					logMessage(docID);
-					logMessage(docScore);
+					logMessage(docID + "-" + docScore);
 					let cleanedDocID = docID.replace(/-\d+$/, '');
 					//If the similarity score is above a certain threshold, add the document to the user input
 					if(docScore < 2000) {
@@ -483,8 +469,7 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 					if(messageMatches[i]) {
 						let messageID = messageResults.ids[0][i];
 						let messageScore = messageResults.distances[0][i];
-						logMessage(messageID);
-						logMessage(messageScore);
+						logMessage(messageID + "-" + messageScore);
 						//If the similarity score is above a certain threshold, add the message to the history
 						if(messageScore < 2000) {
 							messages += messageMatches[i] + "\n";	
@@ -507,8 +492,7 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 				if(codeMatches[i]) {
 					let codeID = codeResults.ids[0][i];
 					let codeScore = codeResults.distances[0][i];
-					logMessage(codeID);
-					logMessage(codeScore);
+					logMessage(codeID + "-" + codeScore);
 					let cleanedCodeID = codeID.replace(/-\d+$/, '');
 					//If the similarity score is above a certain threshold, add the code to the user input
 					if(codeScore < 2000) {
@@ -586,7 +570,6 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 			}
 			if (languageNext) {
 				language = chunk;
-				logMessage(language);
 				languageNext = false; // reset the flag
 				codeId = "codeId-" + Date.now();
 				panel.webview.postMessage({ command: 'startBotCode', id: messageId, codeId: codeId, language: language });
@@ -650,7 +633,7 @@ async function handleUserInput(panel, userInput, useMessageHistory) {
 }
 
 //Stop LLM output stream
-async function stopStream(panel) {
+async function stopStream() {
     if (currentStream && currentStream.return) {
         abortController.abort();
         await currentStream.return();
@@ -786,7 +769,7 @@ async function createCollections() {
 }
 
 //This function uploads files to the vector DB and Postgres
-async function handleFileUpload(panel, file, fileName) {
+async function handleFileUpload(file, fileName) {
     const fileContent = Buffer.from(file, 'base64');
 
 	panel.webview.postMessage({
@@ -858,7 +841,7 @@ async function handleFileUpload(panel, file, fileName) {
 }
 
 //This function deletes the file from vector DB and postgres
-async function removeFileFromDB(panel, ind) {
+async function removeFileFromDB(ind) {
 	let file = uploadedFiles[ind];
 	uploadedFiles.splice(ind, 1); // Remove the file from the array
 	panel.webview.postMessage({
@@ -936,7 +919,44 @@ async function storeMessage() {
  * LLM Model Management
  ****************************************************************************/
 
-async function changeModel(panel, selectedModel) {
+function listOllamaModels(retries = 0) {
+	exec('ollama list', (err, stdout, stderr) => {
+		if (err) {
+			if (retries < MAX_RETRIES) {
+				logMessage(`Error listing ollama models, retrying... (${retries + 1}/${MAX_RETRIES})`);
+				setTimeout(() => listOllamaModels(retries + 1), RETRY_DELAY);
+			} else {
+				logMessage(`Error listing ollama models after ${MAX_RETRIES} retries: ${err}`);
+			}
+			return;
+		}
+
+		const lines = stdout.split('\n');
+		// Remove the header line and any empty lines
+		const modelLines = lines.slice(1).filter(line => line.trim() !== '');
+
+		// Extract the model names
+		installedModels = modelLines.map(line => line.split(/\s+/)[0].split(':')[0]);
+
+		// Set default model to code-buddy
+		logMessage(`Ollama models: ${installedModels}`);
+		if (installedModels.includes("code-buddy")) {
+			panel.webview.postMessage({
+				command: 'showInstallButton',
+				visible: false,
+				model: "code-buddy"
+			});
+		} else {
+			panel.webview.postMessage({
+				command: 'showInstallButton',
+				visible: true,
+				model: "code-buddy"
+			});
+		}
+	});
+}
+
+async function changeModel(selectedModel) {
     if (selectedModel == "GPT") {
         isGPT = true;
     } else {
@@ -944,14 +964,12 @@ async function changeModel(panel, selectedModel) {
         isGPT = false;
     }
 	if(installedModels.includes(selectedModel)) {
-		logMessage("installed");
 		panel.webview.postMessage({
 			command: 'showInstallButton',
 			visible: false,
 			model: selectedModel
 		});
 	} else {
-		logMessage("not installed");
 		panel.webview.postMessage({
 			command: 'showInstallButton',
 			visible: true,
@@ -961,9 +979,9 @@ async function changeModel(panel, selectedModel) {
     logMessage(`Switching to model: ${selectedModel}`);
 }
 
-async function installModel(panel, selectedModel) {
+async function installModel(selectedModel) {
 	if(selectedModel === 'code-buddy') {
-		installCodeBuddy(panel);
+		installCodeBuddy();
 		return;
 	}
 	// Run the terminal command to pull the model
@@ -1017,7 +1035,7 @@ async function installModel(panel, selectedModel) {
 	});
 }
 
-async function installCodeBuddy(panel) {
+async function installCodeBuddy() {
 	if(!installedModels.includes('phi3')) {
 		vscode.window.showInformationMessage("phi3 needs to be installed first.");
 		panel.webview.postMessage({
@@ -1087,7 +1105,7 @@ async function installCodeBuddy(panel) {
 
 }
 
-function removeModel(panel, selectedModel) {
+function removeModel(selectedModel) {
 	const ollamaProcess = spawn('ollama', ['rm', selectedModel]);
 
 	ollamaProcess.on('close', (code) => {
@@ -1110,7 +1128,7 @@ function removeModel(panel, selectedModel) {
  ****************************************************************************/
 
 //Function to insert code from chat window at a certain line number
-async function insertCodeAtLine(panel, code, lineNumber) {
+async function insertCodeAtLine(code, lineNumber) {
 	const editor = lastFocusedEditor;
 
     // Ensure lineNumber is valid and within range
@@ -1844,6 +1862,22 @@ function getWebviewContent() {
 				}
 			}
 
+			function explainCode(text) {
+				const message = text;
+				if (message.trim()) {
+					addMessageToChat(message, 'userMessage');
+					vscode.postMessage({
+						command: 'sendInput',
+						text: message,
+						useMessageHistory: false
+					});
+					sendIcon.style.display = 'none';
+					stopIcon.style.display = 'inline';
+					isStreaming = true;
+				}
+
+			}
+
 			// Listen for messages from the extension
 			window.addEventListener('message', event => {
 				const message = event.data;
@@ -1878,6 +1912,9 @@ function getWebviewContent() {
 						break;
 					case 'showInstallButton':
 						showInstallButton(message.visible, message.model);
+						break;
+					case 'explainCode':
+						explainCode(message.text);
 						break;
 				}
 			});

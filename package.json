@@ -25,14 +25,35 @@
         "title": "Trigger Completion"
       },
       {
-        "command": "extension.debugWithCodeBuddy",
+        "command": "code-assistant.debugWithCodeBuddy",
         "title": "Debug with Code Buddy"
+      },
+      {
+        "command": "code-assistant.explainWithCodeBuddy",
+        "title": "Explain with Code Buddy"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "buddy.submenu",
+        "label": "Buddy"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "command": "extension.debugWithCodeBuddy",
+          "submenu": "buddy.submenu",
+          "group": "navigation"
+        }
+      ],
+      "buddy.submenu": [
+        {
+          "command": "code-assistant.debugWithCodeBuddy",
+          "when": "editorHasSelection",
+          "group": "navigation"
+        },
+        {
+          "command": "code-assistant.explainWithCodeBuddy",
           "when": "editorHasSelection",
           "group": "navigation"
         }
@@ -57,6 +78,7 @@
     "@vscode/test-cli": "^0.0.8",
     "@vscode/test-electron": "^2.4.1",
     "eslint": "^8.57.0",
+    "jest": "^29.7.0",
     "typescript": "^5.4.5"
   },
   "dependencies": {
