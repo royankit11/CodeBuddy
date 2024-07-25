@@ -3,7 +3,7 @@
   "displayName": "Code Buddy",
   "publisher": "SutherlandDev",
   "description": "Your Sutherland assistant",
-  "version": "0.0.1",
+  "version": "0.0.4",
   "engines": {
     "vscode": "^1.88.0",
     "node": ">=12.0.0"
