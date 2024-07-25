@@ -55,6 +55,7 @@ let isGPT = false;
 //Monitoring if an LLM is streaming at the moment (whether for query or code completion)
 let currentStream = null;
 let autocompleteStream;
+let debugStream;
 
 //Array of uploaded files
 let uploadedFiles = [];
@@ -258,6 +259,13 @@ class MyEmbeddingFunction {
  * Debug with Code Buddy
  ****************************************************************************/
 	let debugWithCodeBuddy = vscode.commands.registerCommand('code-assistant.debugWithCodeBuddy', async function () {
+		if(debugStream && debugStream.return) {
+			abortController.abort();
+			await debugStream.return();
+			debugStream = null;
+			vscode.window.setStatusBarMessage('');
+			return;
+		}
         const editor = vscode.window.activeTextEditor;
         if (editor) {
 			vscode.window.setStatusBarMessage('Debugging...');
@@ -278,7 +286,7 @@ class MyEmbeddingFunction {
 
 			logMessage(query);
 
-			let debugStream = await ollama.stream(query, { signal: abortController.signal });
+			debugStream = await ollama.stream(query, { signal: abortController.signal });
 
 			await editor.edit(editBuilder => {
 				editBuilder.insert(position, '\n');  // Insert a new line to create space
@@ -301,6 +309,7 @@ class MyEmbeddingFunction {
 					position = position.translate(0, lastLineLength);
 				}
 			}
+			debugStream = null;
 			vscode.window.setStatusBarMessage('');
         }
     });

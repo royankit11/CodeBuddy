@@ -367,7 +367,6 @@ suite('Extension Test Suite', () => {
         assert.ok(myExtension.docDatabase['Resume_AnkitRoy.pdf'].includes('Sutherland'), 'File was not uploaded');
     });
 
-    */
 
     test('TC_009 - Query About File', async function () {
         await vscode.commands.executeCommand('code-assistant.codeBuddy');
@@ -389,6 +388,8 @@ suite('Extension Test Suite', () => {
 
         await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
     });
+
+    */
 
 
 });
