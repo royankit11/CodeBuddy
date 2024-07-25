@@ -342,17 +342,53 @@ suite('Extension Test Suite', () => {
         console.log('Document Text after Debugging:', newText);
 
         // Perform assertions to check the expected behavior
-        assert.ok(newText.includes('quicksort'), 'Completion text not found');
+        assert.ok(newText.includes('quicksort'), 'Incorrect debug');
 
         // Clean up (close the editor and delete the temporary file)
         await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
         fs.unlinkSync(filePath);
     });
 
-    */
 
     test('TC_008 - Upload file', async function () {
-        myExtension.handleFileUpload();
+        await vscode.commands.executeCommand('code-assistant.codeBuddy');
+
+        const pdfPath = path.resolve(__dirname, 'Resume_AnkitRoy.pdf');
+
+        // Read the file content
+        const fileBuffer = fs.readFileSync(pdfPath);
+
+        // Convert the file content to base64
+        const base64File = fileBuffer.toString('base64');
+        await myExtension.handleFileUpload(base64File, 'Resume_AnkitRoy.pdf');
+
+
+        assert.ok(myExtension.uploadedFiles[0] === ('Resume_AnkitRoy.pdf'), 'File was not uploaded');
+        assert.ok(myExtension.docDatabase['Resume_AnkitRoy.pdf'].includes('Sutherland'), 'File was not uploaded');
     });
+
+    */
+
+    test('TC_009 - Query About File', async function () {
+        await vscode.commands.executeCommand('code-assistant.codeBuddy');
+
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        const pdfPath = path.resolve(__dirname, 'Resume_AnkitRoy.pdf');
+
+        // Read the file content
+        const fileBuffer = fs.readFileSync(pdfPath);
+
+        // Convert the file content to base64
+        const base64File = fileBuffer.toString('base64');
+        await myExtension.handleFileUpload(base64File, 'Resume_AnkitRoy.pdf');
+
+        myExtension.handleUserInput("What experience do I have?", false);
+
+        await new Promise(resolve => setTimeout(resolve, 12000));
+
+        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    });
+
 
 });

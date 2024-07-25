@@ -102,8 +102,10 @@ const embedder = new OllamaEmbeddings({
 	baseUrl: "http://localhost:11434", // default value
 });
 
+//Make the webview panel a global variable so it can be accessed by all functions
 let panel = null;
 
+//values used if ollama list errors
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000; // in milliseconds
 
@@ -315,7 +317,24 @@ class MyEmbeddingFunction {
 			//Get the selected text and set the cursor to the end of the selected text
             selectedText = editor.document.getText(selection);
 
-			panel.webview.postMessage({ command: 'explainCode', text: "Explain this code"});
+			panel.webview.postMessage({ command: 'shortcutCommand', text: "Explain this code"});
+		
+        }
+    });
+
+/****************************************************************************
+ * Test with Code Buddy
+ ****************************************************************************/
+
+	let testWithCodeBuddy = vscode.commands.registerCommand('code-assistant.testWithCodeBuddy', async function () {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            const selection = editor.selection;
+
+			//Get the selected text and set the cursor to the end of the selected text
+            selectedText = editor.document.getText(selection);
+
+			panel.webview.postMessage({ command: 'shortcutCommand', text: "Generate test cases for this code"});
 		
         }
     });
@@ -394,6 +413,7 @@ class MyEmbeddingFunction {
 	context.subscriptions.push(completionCommand);
 	context.subscriptions.push(debugWithCodeBuddy);
 	context.subscriptions.push(explainWithCodeBuddy);
+	context.subscriptions.push(testWithCodeBuddy);
 }
 
 /****************************************************************************
@@ -1864,7 +1884,7 @@ function getWebviewContent() {
 				}
 			}
 
-			function explainCode(text) {
+			function shortcutCommand(text) {
 				const message = text;
 				if (message.trim()) {
 					addMessageToChat(message, 'userMessage');
@@ -1915,8 +1935,8 @@ function getWebviewContent() {
 					case 'showInstallButton':
 						showInstallButton(message.visible, message.model);
 						break;
-					case 'explainCode':
-						explainCode(message.text);
+					case 'shortcutCommand':
+						shortcutCommand(message.text);
 						break;
 				}
 			});
@@ -1938,5 +1958,12 @@ async function deactivate() {
 
 module.exports = {
     activate,
-    deactivate
+    deactivate,
+
+	//For testing purposes only
+	handleFileUpload,
+	uploadedFiles,
+	docDatabase,
+	handleUserInput,
+	llmResponse
 };

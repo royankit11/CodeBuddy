@@ -26,17 +26,21 @@
       },
       {
         "command": "code-assistant.debugWithCodeBuddy",
-        "title": "Debug with Code Buddy"
+        "title": "Debug"
       },
       {
         "command": "code-assistant.explainWithCodeBuddy",
-        "title": "Explain with Code Buddy"
+        "title": "Explain"
+      },
+      {
+        "command": "code-assistant.testWithCodeBuddy",
+        "title": "Generate test cases"
       }
     ],
     "submenus": [
       {
         "id": "buddy.submenu",
-        "label": "Buddy"
+        "label": "Code Buddy"
       }
     ],
     "menus": {
@@ -54,6 +58,11 @@
         },
         {
           "command": "code-assistant.explainWithCodeBuddy",
+          "when": "editorHasSelection",
+          "group": "navigation"
+        },
+        {
+          "command": "code-assistant.testWithCodeBuddy",
           "when": "editorHasSelection",
           "group": "navigation"
         }
