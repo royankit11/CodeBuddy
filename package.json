@@ -4,7 +4,7 @@
   "publisher": "SutherlandDev",
   "description": "Your Sutherland assistant",
   "version": "0.0.4",
-  "icon": "my-icon.svg",
+  "icon": "sutherland-logo.png",
   "engines": {
     "vscode": "^1.88.0",
     "node": ">=12.0.0"
