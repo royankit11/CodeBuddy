@@ -33,12 +33,15 @@ const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
 
+const ChatViewProvider = require('./webviewProvider.js');
+
 /****************************************************************************
  * Global Variables
  ****************************************************************************/
 
 //Installed LLM models on user's machine
 let installedModels = [];
+const DEFAULT_MODELS = ["code-buddy", "phi3", "granite-code", "llama2", "llama3", "codellama"];
 
 //Message history is an array of objects that contain the user query and the LLM response
 let messageHistory = [];
@@ -126,6 +129,12 @@ class MyEmbeddingFunction {
  ****************************************************************************/
  function activate(context) {
     logMessage('Congratulations, your extension "code-assistant" is now active!');
+
+	const provider = new ChatViewProvider(context);
+
+    context.subscriptions.push(
+		vscode.window.registerWebviewViewProvider('codeBuddy.chatWindow', provider)
+	  );
 
 	//Start the Ollama server
     exec('ollama serve', (err, stdout, stderr) => {
@@ -368,7 +377,6 @@ class MyEmbeddingFunction {
 		} catch (error) {
 			console.error('Error setting up Chroma collections:', error);
 		}
-
 
 
 		//Load the webview content and send the initial message
@@ -969,6 +977,15 @@ function listOllamaModels(retries = 0) {
 		// Extract the model names
 		installedModels = modelLines.map(line => line.split(/\s+/)[0].split(':')[0]);
 
+		for(const model of installedModels) {
+			if(!DEFAULT_MODELS.includes(model)) {
+				panel.webview.postMessage({
+					command: 'addExtraInstalled',
+					model: model
+				});
+			}
+		}
+
 		// Set default model to code-buddy
 		logMessage(`Ollama models: ${installedModels}`);
 		if (installedModels.includes("code-buddy")) {
@@ -1512,12 +1529,12 @@ function getWebviewContent() {
 			</div>
 			<div id="installButtonContainer" style="margin-right: 10px;"></div>
 		 	<select id="modelSelect" onchange="changeModel()">
-				<option value="code-buddy">code-buddy</option>
-                <option value="phi3">phi3</option>
-				<option value="granite-code">granite-code</option>
-                <option value="llama2">llama2</option>
-				<option value="llama3">llama3</option>
-                <option value="codellama">codellama</option>
+				<option value="code-buddy">code-buddy (default) </option>
+                <option value="phi3">phi3 (light) </option>
+				<option value="granite-code">granite-code (light) </option>
+                <option value="llama2">llama2 (heavy) </option>
+				<option value="llama3">llama3 (heavy) </option>
+                <option value="codellama">codellama (heavy) </option>
             </select>
         </div>
 		<div id="chatContainer">
@@ -1848,6 +1865,14 @@ function getWebviewContent() {
 					}, 500); // Allow some time for the user to see 100% completion
 				}
             }
+			
+			function addExtraInstalled(model) {
+				const modelSelect = document.getElementById('modelSelect');
+				const option = document.createElement('option');
+				option.value = model;
+				option.textContent = model;
+				modelSelect.appendChild(option);
+			}
 
 			function showProgressBar() {
 				document.getElementById('progressBarContainer').style.display = 'block';
@@ -1946,6 +1971,9 @@ function getWebviewContent() {
 						break;
 					case 'shortcutCommand':
 						shortcutCommand(message.text);
+						break;
+					case 'addExtraInstalled':
+						addExtraInstalled(message.model);
 						break;
 				}
 			});

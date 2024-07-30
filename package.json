@@ -11,10 +11,27 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": ["onView:codeBuddy.chatWindow"],
   "main": "./extension.js",
   "module": "./main.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codeBuddy",
+          "title": "Code Buddy",
+          "icon": "my-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "codeBuddy": [
+        {
+          "id": "codeBuddy.chatWindow",
+          "name": "Chat Window"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "code-assistant.codeBuddy",
