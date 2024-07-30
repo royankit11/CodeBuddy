@@ -33,8 +33,6 @@ const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
 
-const ChatViewProvider = require('./webviewProvider.js');
-
 /****************************************************************************
  * Global Variables
  ****************************************************************************/
@@ -108,6 +106,7 @@ const embedder = new OllamaEmbeddings({
 
 //Make the webview panel a global variable so it can be accessed by all functions
 let panel = null;
+let isPanelOpen = false;
 
 //values used if ollama list errors
 const MAX_RETRIES = 3;
@@ -124,16 +123,61 @@ class MyEmbeddingFunction {
 	}
 }
 
+class ChatWindowProvider {
+    constructor(context) {
+        this.context = context;
+    }
+
+    async resolveWebviewView(webviewView, context, token) {
+        webviewView.webview.options = {
+            enableScripts: true,
+            retainContextWhenHidden: true
+        };
+
+        webviewView.webview.html = this.getHtmlForWebview(webviewView.webview);
+
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible && !isPanelOpen) {
+				vscode.commands.executeCommand('code-assistant.codeBuddy');
+            }
+        });
+
+        vscode.commands.executeCommand('code-assistant.codeBuddy');
+    }
+
+    getHtmlForWebview(webview) {
+		return `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body>
+        <h1>Welcome to Code Buddy!</h1>
+        <p>The chat window will open up shortly.</p>
+        <script>
+          const vscode = acquireVsCodeApi();
+          function sendMessage() {
+            vscode.postMessage({ command: 'alert', text: 'Hello from the webview!' });
+          }
+        </script>
+      </body>
+      </html>
+    `;
+	}
+}
+
 /****************************************************************************
  * Extension Activation
  ****************************************************************************/
  function activate(context) {
     logMessage('Congratulations, your extension "code-assistant" is now active!');
 
-	const provider = new ChatViewProvider(context);
+	const provider = new ChatWindowProvider(context);
 
     context.subscriptions.push(
-		vscode.window.registerWebviewViewProvider('codeBuddy.chatWindow', provider)
+		vscode.window.registerWebviewViewProvider('landingPage', provider)
 	  );
 
 	//Start the Ollama server
@@ -361,13 +405,14 @@ class MyEmbeddingFunction {
  * Open Chat Window
  ****************************************************************************/
     let openChatCommand = vscode.commands.registerCommand('code-assistant.codeBuddy', async function () {
-
 		panel = vscode.window.createWebviewPanel(
 			'chatPanel',
 			'Code Buddy',
 			vscode.ViewColumn.Beside,
 			{ enableScripts: true }
 		);
+
+		isPanelOpen = true;
 
 		//Check if Chroma Docker is running
 		try {
@@ -424,6 +469,11 @@ class MyEmbeddingFunction {
 				insertCodeAtLine(message.code, message.lineNumber);
 			}  
         });
+
+		panel.onDidDispose(() => {
+			isPanelOpen = false;
+			console.log('Panel was closed');
+		}, null, context.subscriptions);
     });
 
     context.subscriptions.push(openChatCommand);

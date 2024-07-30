@@ -11,7 +11,7 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": ["onView:codeBuddy.chatWindow"],
+  "activationEvents": [],
   "main": "./extension.js",
   "module": "./main.js",
   "contributes": {
@@ -27,8 +27,9 @@
     "views": {
       "codeBuddy": [
         {
-          "id": "codeBuddy.chatWindow",
-          "name": "Chat Window"
+          "id": "landingPage",
+          "name": "Landing Page",
+          "type": "webview"
         }
       ]
     },
