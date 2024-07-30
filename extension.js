@@ -123,6 +123,10 @@ class MyEmbeddingFunction {
 	}
 }
 
+/****************************************************************************
+ * Landing Page Webview
+ ****************************************************************************/
+
 class ChatWindowProvider {
     constructor(context) {
         this.context = context;
@@ -470,9 +474,9 @@ class ChatWindowProvider {
 			}  
         });
 
+		//this is important because the webview will only be launched if it isn't already open
 		panel.onDidDispose(() => {
 			isPanelOpen = false;
-			console.log('Panel was closed');
 		}, null, context.subscriptions);
     });
 
